@@ -20,7 +20,7 @@
           "energy": 0.0,
           "g": 2.0,
           "label": "H I 1S 2SE",
-          "ionization": 1,
+          "ionization": 0,
           "J": 0.5,
           "L": 0,
           "S": 0.5
@@ -29,7 +29,7 @@
           "energy": 82258.211,
           "g": 8.0,
           "label": "H I 2P 2PO",
-          "ionization": 1,
+          "ionization": 0,
           "J": 1.5,
           "L": 1,
           "S": 0.5
@@ -38,7 +38,7 @@
           "energy": 97491.219,
           "g": 18.0,
           "label": "H I 3D 2DE",
-          "ionization": 1,
+          "ionization": 0,
           "J": 2.5,
           "L": 2,
           "S": 0.5
@@ -47,7 +47,7 @@
           "energy": 102822.766,
           "g": 32.0,
           "label": "H I 4F 2FO",
-          "ionization": 1,
+          "ionization": 0,
           "J": 3.5,
           "L": 3,
           "S": 0.5
@@ -56,7 +56,7 @@
           "energy": 105290.50800000002,
           "g": 50.0,
           "label": "H I 5G 2GE",
-          "ionization": 1,
+          "ionization": 0,
           "J": 4.5,
           "L": 4,
           "S": 0.5
@@ -65,10 +65,10 @@
           "energy": 109677.617,
           "g": 1.0,
           "label": "H II continuum",
-          "ionization": 2,
+          "ionization": 1,
           "J": 0.0,
-          "L": 0,
-          "S": 0.0
+          "L": 5,
+          "S": 0.5
         }
       ],
       "lines": [
@@ -661,11 +661,11 @@
         }
       ],
       "irwin_coefficients": {
-        "1": [
+        "0": [
           -261.655891, 163.428326, -40.6133526, 5.03282928, -0.310998364,
           0.00766654594
         ],
-        "2": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        "1": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
       }
     },
     {
@@ -678,7 +678,7 @@
           "energy": 0.0,
           "g": 2.0,
           "label": "CA II 4S",
-          "ionization": 2,
+          "ionization": 1,
           "J": 0.5,
           "L": 0,
           "S": 0.5
@@ -687,7 +687,7 @@
           "energy": 13650.189999999999,
           "g": 4.0,
           "label": "CA II 3D 3/2",
-          "ionization": 2,
+          "ionization": 1,
           "J": 1.5,
           "L": 2,
           "S": 0.5
@@ -696,7 +696,7 @@
           "energy": 13710.88,
           "g": 6.0,
           "label": "CA II 3D 5/2",
-          "ionization": 2,
+          "ionization": 1,
           "J": 2.5,
           "L": 2,
           "S": 0.5
@@ -705,7 +705,7 @@
           "energy": 25191.51,
           "g": 2.0,
           "label": "CA II 4P 1/2",
-          "ionization": 2,
+          "ionization": 1,
           "J": 0.5,
           "L": 1,
           "S": 0.5
@@ -714,7 +714,7 @@
           "energy": 25414.4,
           "g": 4.0,
           "label": "CA II 4P 3/2",
-          "ionization": 2,
+          "ionization": 1,
           "J": 1.5,
           "L": 1,
           "S": 0.5
@@ -723,7 +723,7 @@
           "energy": 95785.47,
           "g": 1.0,
           "label": "CA III",
-          "ionization": 3,
+          "ionization": 2,
           "J": 0.0,
           "L": 0,
           "S": 0.0

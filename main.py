@@ -44,6 +44,7 @@ if eval(configuration["debug"]):
 print("Initializing atmosphere...")
 atmosphere = Atmosphere.from_dict(configuration["atmosphere"])
 
+print("Loading atomic models...")
 atoms = [MultiLevelAtom.from_dict(config_atom) for config_atom in configuration["atoms"]]
 for atom in atoms:
     atom.populations = compute_lte_populations(atom, atmosphere)
@@ -64,6 +65,7 @@ hnu_grid = h_CGS * frequency_grid
 hnu_grid[hnu_grid == 0] = 1e-100 # Avoid division by zero
 hnu3_grid = h_CGS * frequency_grid**3
 
+# --------------------------
 print("Interpolating photoionization cross-sections...\n")
 for atom in atoms:
     atom.photoionization_alphas = np.zeros((len(atom.continua), len(frequency_grid)))
@@ -88,6 +90,83 @@ for atom in atoms:
         alphas_grid = np.interp(frequency_grid, cont_nus_sorted, cont_alphas_sorted, left=0.0, right=0.0)
         atom.photoionization_alphas[i_cont, :] = alphas_grid
 
+# --------------------------
+# Pre-calculate line broadening parameters for each line and depth point
+for atom in atoms:
+    atom_mass_CGS = atom.mass * m_u_CGS
+    for line in atom.lines:
+        # Defaults for depth-dependent terms
+        line.vdw_cross = 0.0
+        line.stark_vrel_factor = 0.0
+        line.stark_c23 = 0.0
+        line.lin_stark_factor = 0.0
+        
+        upper_lvl = atom.levels[line.upper_level_index]
+        lower_lvl = atom.levels[line.lower_level_index]
+        current_ion = upper_lvl.ionization
+        
+        # Get overarching continuum level for limits
+        cont_level = next((lvl for lvl in atom.levels if lvl.ionization == current_ion + 1), None)
+        E_cont = cont_level.energy if cont_level else atom.levels[-1].energy
+
+        for elastic in line.broadening.elastic:
+            if elastic.get("type") == "VdwUnsold":
+                '''
+                Implementation of the Unsold method for van der Waals broadening.
+                Follows LW and HM2014 pp. 237-238,
+                '''
+                vals = elastic.get("vals", [1.0, 1.0])
+                deltaR = (E_Ryd_erg / (E_cont - upper_lvl.energy))**2 - (E_Ryd_erg / (E_cont - lower_lvl.energy))**2
+                Z = upper_lvl.ionization + 1
+                
+                C6_CGS = 2.5 * q_e_CGS**2 * alpha_H_CGS * 2.0 * np.pi * (Z * a0_CGS)**2 / h_CGS * abs(deltaR)
+                C625 = C6_CGS**0.4
+                
+                vRel35H = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_H_CGS))**0.3
+                vRel35He = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_He_CGS))**0.3
+                
+                line.vdw_cross = 8.08 * (vals[0] * vRel35H + vals[1] * atmosphere.he_abund * vRel35He) * C625
+                
+            elif elastic.get("type") == "QuadraticStarkBroadening":
+                '''
+                Lindholm theory result for Quadratic Stark broadening by electrons and
+                singly ionised particles.
+                Follows HM2014 pp. 238-239, uses C4 from Traving 1960 via LW (and previously RH).
+                '''
+                coeff = elastic.get("coeff", 1.0)
+                C_stark = 8.0 * kB_CGS / (np.pi * atom_mass_CGS)
+                # 28.0 is average atomic weight
+                Cm = (1.0 + atom_mass_CGS / m_e_CGS)**(1.0/6.0) \
+                    + (1.0 + atom_mass_CGS / (28.0 * m_u_CGS))**(1.0/6.0)
+                line.stark_vrel_factor = (C_stark)**(1.0/6.0) * Cm
+                
+                E_Ryd_elem = E_Ryd_erg / (1.0 + m_e_CGS / atom_mass_CGS)
+                Z_i = lower_lvl.ionization + 1
+                neff_l = Z_i * np.sqrt(E_Ryd_elem / (E_cont - lower_lvl.energy))
+                neff_u = Z_i * np.sqrt(E_Ryd_elem / (E_cont - upper_lvl.energy))
+                
+                C4 = q_e_CGS**2 \
+                   * a0_CGS \
+                   * (2.0 * np.pi * a0_CGS**2 / h_CGS) / (18.0 * Z_i**4) * \
+                     abs((neff_u * (5.0 * neff_u**2 + 1.0))**2 \
+                         - (neff_l * (5.0 * neff_l**2 + 1.0))**2)
+                line.stark_c23 = 11.37 * (coeff * C4)**(2.0/3.0)
+                
+            elif elastic.get("type") == "HydrogenLinearStarkBroadening":
+                """ 
+                Linear Stark broadening for the case of Hydrogen from Sutton 1978 (like LW and RH).
+                """     
+                nUpper = np.round(np.sqrt(0.5 * upper_lvl.g))
+                nLower = np.round(np.sqrt(0.5 * lower_lvl.g))
+                a1 = 0.642 if nUpper - nLower == 1 else 1.0
+                cc = a1 * 0.6 * (nUpper**2 - nLower**2)
+                # Lightweaver's unit (cm-2 translation drops the 10^-4 scalar when taking ne_CGS vs ne_SI)
+                line.lin_stark_factor = cc * 4.0 * np.pi * 0.425
+            
+            else:
+                raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
+
+# #################################################################################
 # LAMBDA ITTERATIONS
 for itteration in range(configuration["max_itterations"]):
 
@@ -102,10 +181,9 @@ for itteration in range(configuration["max_itterations"]):
         atom.photoionization_rates = np.zeros((atmosphere.Ndepth, len(atom.continua)))
         atom.recombination_rates = np.zeros((atmosphere.Ndepth, len(atom.continua)))
 
-    for ir, ray in tqdm(enumerate(rays), leave=False, desc="solving the RT to integrate Js"):
+    for ir, ray in tqdm(enumerate(rays), total=len(rays), leave=False, desc="solving the RT to integrate Js"):
 
         # INITIAL CONDITIONS OF THE LONG CHARACTERISTICS RAY
-        # check if the ray is downwards
         if ray > 0:
             downward_ray = False
             iz_start, iz_end, step = 0, atmosphere.Ndepth, 1
@@ -135,9 +213,17 @@ for itteration in range(configuration["max_itterations"]):
             # Compute the outgoing intentensity at point O, and the MALI contribution Lambda_star_mu at point O.
             # I_o, Lambda_star_mu = compute_RT_solver(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
 
+            h_atom = next((a for a in atoms if a.name == "H"), None)
+            # True ground state hydrogen mapping. Falls back to background total H if not existing in config.
+            nHGround = h_atom.populations[iz, 0] if h_atom else atmosphere.nh[iz]
+
+
             # go trhough all the active atoms
             for atom in atoms:
-                # go through all the lines of the atom
+                
+                # -------------------
+                # go through all the lines of the atom to compute Js
+                # that will be used to compute the bound-bound Radiative rates.
                 for il, line in enumerate(atom.lines):
 
                     total_damping = 0.0
@@ -151,11 +237,11 @@ for itteration in range(configuration["max_itterations"]):
 
                     for elastic in line.broadening.elastic:
                         if elastic.get("type") == "VdwUnsold":
-                            total_damping += 0.0
+                            total_damping += line.vdw_cross * atmosphere.temp[iz]**0.3 * nHGround
                         elif elastic.get("type") == "QuadraticStarkBroadening":
-                            total_damping += 0.0
+                            total_damping += line.stark_c23 * line.stark_vrel_factor * atmosphere.temp[iz]**(1.0/6.0) * atmosphere.ne[iz]
                         elif elastic.get("type") == "HydrogenLinearStarkBroadening":
-                            total_damping += 0.0
+                            total_damping += line.lin_stark_factor * atmosphere.ne[iz]**(2.0/3.0)
                         else:
                             raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
@@ -165,19 +251,16 @@ for itteration in range(configuration["max_itterations"]):
                     voigt_line = voigt(dop_freq, a_damp).real
                     voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
 
-                    # --- Calculate line opacity and ratio ---
-                    nu_pop = atom.populations[iz, line.upper_level_index]
-                    nl_pop = atom.populations[iz, line.lower_level_index]
-
                     # # Sum the intensity over the wavelength
                     atom.Js[iz, il] += np.sum(weigths[ir]*weigths_freq_grid*I_o*voigt_norm)
                     # # Integrate the Lambda operator
                     # atom.Lambda_star_bar[iz, il] += np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)
 
-
-                # go through all the continua of the atom
+                # go through all the continua of the atom to compute the photoionization and recombination rates
+                # this will then be used to compute the bound-free Radiative rates for the SEE.
                 for ic, cont in enumerate(atom.continua):
-                    i, j = cont.lower_level_index, cont.upper_level_index
+                    # TO DO: IMPLEMENT THE CONTINIUUM
+                    pass
 
     max_relative_change = 0.0 #solve_SEE(atoms, atmosphere)
     if max_relative_change < configuration["max_tolerance"]:
@@ -185,4 +268,5 @@ for itteration in range(configuration["max_itterations"]):
         break
     print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
     print("-"*50 + "\n")
+# #################################################################################
 

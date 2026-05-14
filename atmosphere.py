@@ -3,7 +3,7 @@ import numpy as np
 from typing import Dict, Any
 from constants import *
 from atoms import MultiLevelAtom
-from chemeq import compute_background_eos, get_partition_functions, partition_function
+from chemeq import compute_background_eos, get_partition_functions, ABUND#, partition_function
 
 def get_angular_quadrature_1D(n_gauss):
     """
@@ -63,7 +63,7 @@ class Atmosphere:
         """
         if not (len(self.zgrid) == len(self.temp) == len(self.pg)):
             raise ValueError("All atmospheric arrays must have the same length.")
-            
+
         # check that z is strictly increasing
         # (avoid weirdos that start the atmosphere from the top, please seek help if you want to do that)
         if not np.all(np.diff(self.zgrid) > 0):
@@ -76,6 +76,8 @@ class Atmosphere:
         self.ne = calculated_ne.copy() # self.pel/(self.temp*kB_CGS) 
         self.ne_bg = calculated_ne.copy() # self.pel/(self.temp*kB_CGS)
         self.nh = calculated_nh.copy() # self.pg/(self.temp*kB_CGS) - self.ne
+        # ABUND[1] corresponds to Helium (Z=2). Abundances are log10 where H=12.0
+        self.he_abund = 10.0**(ABUND[1] - 12.0)
 
 def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.ndarray:
     """
@@ -139,9 +141,11 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
         Phi = (2.0 / ne) * saha_const * (T ** 1.5)
         
         # Calculate Irwin partition functions for each stage at temperature T
-        U_t = {}
-        for s in stages_unique:
-            U_t[s] = partition_function(atom, s, T)
+        # U_t = {}
+        # for s in stages_unique:
+        #     U_t[s] = partition_function(atom, s, T)
+        UI, UII, UIII = get_partition_functions(atom.Z, T)
+        U_t = {0: UI, 1: UII, 2: UIII}
             
         # Calculate the fractional abundance of each stage relative to the lowest provided stage (s_ref)
         f = {}

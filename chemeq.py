@@ -482,22 +482,22 @@ def compute_background_eos(temp_array: np.ndarray, pg_array: np.ndarray) -> tupl
         
     return ne_out, nh_out
 
-def partition_function(atom: MultiLevelAtom, stage: int, T: float) -> float:
-    """
-    Computes the Irwin partition function for a specific ionization stage at temperature T.
-    The polynomial follows the form ln Q = sum(a_i * (ln T)^i).
-    Calculated rapidly using nested multiplication (Horner's method) as recommended.
-    """
-    irwin_coeffs = atom.irwin_coefficients.get(stage, [])
+# def partition_function(atom: MultiLevelAtom, stage: int, T: float) -> float:
+#     """
+#     Computes the Irwin partition function for a specific ionization stage at temperature T.
+#     The polynomial follows the form ln Q = sum(a_i * (ln T)^i).
+#     Calculated rapidly using nested multiplication (Horner's method) as recommended.
+#     """
+#     irwin_coeffs = atom.irwin_coefficients.get(stage, [])
     
-    if not irwin_coeffs:
-        return 1.0  # Fallback if no coefficients are provided
+#     if not irwin_coeffs:
+#         return 1.0  # Fallback if no coefficients are provided
 
-    lnT = np.log(T)
-    sum_val = 0.0
+#     lnT = np.log(T)
+#     sum_val = 0.0
     
-    # Rapid calculation using nested multiplication (Horner's method)
-    for a in reversed(irwin_coeffs):
-        sum_val = sum_val * lnT + a
+#     # Rapid calculation using nested multiplication (Horner's method)
+#     for a in reversed(irwin_coeffs):
+#         sum_val = sum_val * lnT + a
         
-    return np.exp(sum_val)
+#     return np.exp(sum_val)

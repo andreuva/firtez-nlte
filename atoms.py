@@ -12,7 +12,7 @@ class Level:
     energy: float
     g: float
     label: str
-    ionization: int  # 1 for neutral, 2 for singly ionized, etc.
+    ionization: int  # 0 for neutral, 1 for singly ionized, etc.
     J: float
     L: int
     S: float
