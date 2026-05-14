@@ -64,6 +64,11 @@ class Atmosphere:
         if not (len(self.zgrid) == len(self.temp) == len(self.pg)):
             raise ValueError("All atmospheric arrays must have the same length.")
             
+        # check that z is strictly increasing
+        # (avoid weirdos that start the atmosphere from the top, please seek help if you want to do that)
+        if not np.all(np.diff(self.zgrid) > 0):
+            raise ValueError("zgrid must be strictly increasing.")
+            
         # Instead of relying on the config's 'pel', we force the 92-element calculation
         print("Calculating baseline EOS using 92 elements...")
         calculated_ne, calculated_nh = compute_background_eos(self.temp, self.pg)

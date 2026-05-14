@@ -8,9 +8,9 @@ from matplotlib import pyplot as plt
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid
-from formal_solver import plank
+from formal_solver import plank, voigt
 
-config_file = 'tests/freq_grid/config_lw.json'
+config_file = 'config_lw.json'
 # load the json configuration
 with open(config_file) as f:
     configuration = json.load(f)
@@ -38,7 +38,7 @@ print("Quadrature initialized.")
 if eval(configuration["debug"]):
     print('-'*25)
     for ir, ray in enumerate(rays):
-        print(f'ray {ir}\t weigth={weigths[ir]}\t inclination={np.rad2deg(np.arccos(ray))} deg')
+        print(f'ray {ir}\t weigth={weigths[ir]}\t mu={ray}\t inclination={np.rad2deg(np.arccos(ray))} deg')
     print('-'*25 + '\n')
 
 print("Initializing atmosphere...")
@@ -91,7 +91,7 @@ for atom in atoms:
 # LAMBDA ITTERATIONS
 for itteration in range(configuration["max_itterations"]):
 
-    print('\n'+'--'*50)
+    print('--'*50)
     print(f'Itteration {itteration+1}/{configuration["max_itterations"]}')
     print('--'*50 + '\n')
 
@@ -107,26 +107,77 @@ for itteration in range(configuration["max_itterations"]):
         # INITIAL CONDITIONS OF THE LONG CHARACTERISTICS RAY
         # check if the ray is downwards
         if ray > 0:
+            downward_ray = False
             iz_start, iz_end, step = 0, atmosphere.Ndepth, 1
-            dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
             I_o = plank(frequency_grid, atmosphere.temp[0])
         else:
+            downward_ray = True
             iz_start, iz_end, step = atmosphere.Ndepth-1, -1, -1
-            dz = atmosphere.zgrid[iz - step] - atmosphere.zgrid[iz]
             I_o = np.zeros_like(frequency_grid)
         
-        # emis_m, abs_m = get_RT_coefficients(iz_start, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+        # emis_O, abs_O = get_RT_coefficients(iz_start, frequency_grid, weigths_freq_grid, atoms, atmosphere)
         
         # Solve RT along the ray to integrate Js and other quantities.
         for iz in range(iz_start + step, iz_end, step):
 
+            # compute the geometrical path length dz for the current step (not necesarily constant)
+            if downward_ray:
+                dz = atmosphere.zgrid[iz - step] - atmosphere.zgrid[iz]
+            else:
+                dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
+
+            # move the O point to M
             I_m = I_o.copy()
-            # emis_o, abs_o = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
-            # I_o = compute_RT_solver(ray, I_m, dz, emis_m, emis_o, abs_m, abs_o)
-            # I_o, Lambda_star_mu = compute_RT_solver(ray, I_m, dz, emis_m, emis_o, abs_m, abs_o)
+            # emis_M, abs_M = emis_O.copy(), abs_O.copy()
+
+            # compute the RT coeffs. in O
+            # emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+            # Compute the outgoing intentensity at point O, and the MALI contribution Lambda_star_mu at point O.
+            # I_o, Lambda_star_mu = compute_RT_solver(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+
+            # go trhough all the active atoms
+            for atom in atoms:
+                # go through all the lines of the atom
+                for il, line in enumerate(atom.lines):
+
+                    total_damping = 0.0
+                    dop_freq = (frequency_grid - line.nu0)/atom.doppler_widths[iz, il]
+
+                    for natural in line.broadening.natural:
+                        if natural.get("type") == "RadiativeBroadening":
+                            total_damping += natural.get("gamma", 0.0)
+                        else:
+                            raise NotImplementedError(f"Natural broadening type {natural.get('type')} not implemented.")
+
+                    for elastic in line.broadening.elastic:
+                        if elastic.get("type") == "VdwUnsold":
+                            total_damping += 0.0
+                        elif elastic.get("type") == "QuadraticStarkBroadening":
+                            total_damping += 0.0
+                        elif elastic.get("type") == "HydrogenLinearStarkBroadening":
+                            total_damping += 0.0
+                        else:
+                            raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
 
-            # emis_m, abs_m = emis_o.copy(), abs_o.copy()
+                    a_damp = total_damping / (4 * np.pi * atom.doppler_widths[iz, il])
+
+                    voigt_line = voigt(dop_freq, a_damp).real
+                    voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
+
+                    # --- Calculate line opacity and ratio ---
+                    nu_pop = atom.populations[iz, line.upper_level_index]
+                    nl_pop = atom.populations[iz, line.lower_level_index]
+
+                    # # Sum the intensity over the wavelength
+                    atom.Js[iz, il] += np.sum(weigths[ir]*weigths_freq_grid*I_o*voigt_norm)
+                    # # Integrate the Lambda operator
+                    # atom.Lambda_star_bar[iz, il] += np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)
+
+
+                # go through all the continua of the atom
+                for ic, cont in enumerate(atom.continua):
+                    i, j = cont.lower_level_index, cont.upper_level_index
 
     max_relative_change = 0.0 #solve_SEE(atoms, atmosphere)
     if max_relative_change < configuration["max_tolerance"]:
