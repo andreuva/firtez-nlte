@@ -52,7 +52,7 @@ for atom in atoms:
     atom.Js = np.zeros((atmosphere.Ndepth, len(atom.lines)))
     atom.compute_doppler_widths(atmosphere, configuration["atmosphere"]["turbulent_velocity"])
 
-print("Creating frequency grid...\n")
+print("Creating frequency grid...")
 frequency_grid, weigths_freq_grid = create_frequency_grid(atoms,
                                                         #   temperature=5700,
                                                           v_turb=configuration["atmosphere"]["turbulent_velocity"],
@@ -67,6 +67,10 @@ hnu3_grid = h_CGS * frequency_grid**3
 
 # --------------------------
 print("Interpolating photoionization cross-sections...\n")
+
+# Use a wavelength grid derived straight from our active frequencies to interpolate our alphas
+wavelength_grid_nm = (c_CGS / frequency_grid) * 1e7
+
 for atom in atoms:
     atom.photoionization_alphas = np.zeros((len(atom.continua), len(frequency_grid)))
     atom.lte_ratios_photoionization = np.zeros((atmosphere.Ndepth, len(atom.continua)))
@@ -75,19 +79,8 @@ for atom in atoms:
         atom.lte_ratios_photoionization[:, i_cont] = (atom.lte_populations[:, cont.lower_level_index]/
                                                       np.maximum(atom.lte_populations[:, cont.upper_level_index], 1e-100))
 
-        # Data from config is (wavelength [nm], sigma [cm^2])
-        # Convert to (frequency [Hz], sigma [cm^2])
-        cont_wls_cm = np.array([wl_nm*1e-7 for wl_nm, sig in cont.photoionization_cross_section])
-        cont_alphas = np.array([sig for wl_nm, sig in cont.photoionization_cross_section])
-        cont_nus = c_CGS / np.maximum(cont_wls_cm, 1e-300) # Avoid div by zero
-
-        # Sort by increasing frequency
-        sort_idx = np.argsort(cont_nus)
-        cont_nus_sorted = cont_nus[sort_idx]
-        cont_alphas_sorted = cont_alphas[sort_idx]
-        
-        # Interpolate onto the global grid, setting sigma=0 outside the continuum's range
-        alphas_grid = np.interp(frequency_grid, cont_nus_sorted, cont_alphas_sorted, left=0.0, right=0.0)
+        # Direct evaluation of analytical Hydrogenic arrays or dynamically interpolated explicit boundaries
+        alphas_grid = cont.alpha(wavelength_grid_nm, atom.levels)
         atom.photoionization_alphas[i_cont, :] = alphas_grid
 
 # --------------------------
@@ -256,17 +249,38 @@ for itteration in range(configuration["max_itterations"]):
                     # # Integrate the Lambda operator
                     # atom.Lambda_star_bar[iz, il] += np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)
 
-                # go through all the continua of the atom to compute the photoionization and recombination rates
+                # go through all the continua of the atom
+                # compute the photoionization and recombination rates
                 # this will then be used to compute the bound-free Radiative rates for the SEE.
-                for ic, cont in enumerate(atom.continua):
-                    # TO DO: IMPLEMENT THE CONTINIUUM
-                    pass
+                for i_cont, cont in enumerate(atom.continua):
+                    alphas = atom.photoionization_alphas[i_cont, :]
+                    
+                    # Restrict to non-zero continuum wavelengths
+                    active_idx = alphas > 0
+                    if not np.any(active_idx):
+                        continue
+                        
+                    # Integration: alpha_v / h_v * I_v * d_v * dOmega
+                    integrand_ik = (alphas[active_idx] / hnu_grid[active_idx]) * I_o[active_idx]
+                    
+                    stim_spont_term = (2.0 * hnu3_grid[active_idx] / c_CGS**2 + I_o[active_idx]) \
+                                    * np.exp(-hnu_grid[active_idx] / (kB_CGS * atmosphere.temp[iz]))
+                    integrand_ki = (alphas[active_idx] / hnu_grid[active_idx]) * atom.lte_ratios_photoionization[iz, i_cont] \
+                                   * stim_spont_term
+                    
+                    # Rates scaled by radiation Solid angle integral equivalences (2*pi for 1D) 
+                    R_ik = 2.0 * np.pi * np.sum(weigths[ir] * weigths_freq_grid[active_idx] * integrand_ik)
+                    R_ki = 2.0 * np.pi * np.sum(weigths[ir] * weigths_freq_grid[active_idx] * integrand_ki)
+                    
+                    atom.photoionization_rates[iz, i_cont] += R_ik
+                    atom.recombination_rates[iz, i_cont] += R_ki
+
 
     max_relative_change = 0.0 #solve_SEE(atoms, atmosphere)
+    print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
+    print("-"*50 + "\n")
     if max_relative_change < configuration["max_tolerance"]:
         print("NLTE converged!")
         break
-    print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
-    print("-"*50 + "\n")
 # #################################################################################
 

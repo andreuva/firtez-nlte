@@ -99,10 +99,7 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
     gs = np.array([l.g for l in levels])                # Statistical weights
     stages = np.array([l.ionization for l in levels])   # Ionization stage (e.g., 1 for neutral, 2 for singly ionized)
 
-    temperature = atmosphere.temp
-    electron_density = atmosphere.ne_bg
-    h_density = atmosphere.nh
-    num_points = len(temperature)
+    num_points = len(atmosphere.zgrid)
 
     # The Saha constant is (2 * pi * m_e * k_B / h^2)^1.5
     saha_const = ((2.0 * np.pi * m_e_CGS * kB_CGS) / (h_CGS**2))**1.5
@@ -110,11 +107,11 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
     # Initialize the output array for populations
     populations = np.zeros((num_points, num_levels))
     
-    # Find unique ionization stages and their ground state energies
+    # Find unique ionizations and their ground state energies
     stages_unique = np.unique(stages)
     E_ground = {}
     for s in stages_unique:
-        # The ground state energy of a stage is the minimum energy among its provided levels
+        # The ground state energy of a ion is the minimum energy among its provided levels
         E_ground[s] = np.min(energies[stages == s])
         
     s_ref = np.min(stages_unique)
@@ -122,12 +119,12 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
     
     # Loop through each point in the atmosphere
     for k in range(num_points):
-        T = temperature[k]
+        T = atmosphere.temp[k]
         if T <= 0.0:
             print(f"WARNING: Negative Temperature in lte populations at iz={k}. Skipping.")
             continue
 
-        ne = electron_density[k]
+        ne = atmosphere.ne_bg[k]
         if ne <= 0.0:
             print(f"WARNING: Negative Electron Density in lte populations at iz={k}. Skipping.")
             continue
@@ -135,7 +132,7 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
         kT = kB_CGS * T
         
         # Total number density for this element at depth k
-        N_total = atom.abundance * h_density[k]
+        N_total = atom.abundance * atmosphere.nh[k]
         
         # Saha factor: (2 / N_e) * (2 * pi * m_e * k_B * T / h^2)^1.5
         Phi = (2.0 / ne) * saha_const * (T ** 1.5)

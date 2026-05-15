@@ -73,17 +73,138 @@ class Line:
 
 @dataclass
 class Continuum:
-    """Represents a bound-free transition (photoionization)."""
+    """Base class for bound-free transitions."""
     upper_level_index: int
     lower_level_index: int
-    photoionization_cross_section: List[Tuple[float, float]]
+    type: str
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Continuum":
-        # m^2 to cm^2
-        data['photoionization_cross_section'] = [tuple([wave_nm, cross_sec_m2*1e4]) for wave_nm, cross_sec_m2 in data['photoionization_cross_section']]
-        return cls(**data)
+        ctype = data.get("type", "ExplicitContinuum")
+        if ctype == "ExplicitContinuum":
+            return ExplicitContinuum.from_dict(data)
+        elif ctype == "HydrogenicContinuum":
+            return HydrogenicContinuum.from_dict(data)
+        else:
+            raise ValueError(f"Unknown continuum type: {ctype}")
 
+    def get_lambda_edge_nm(self, levels: List[Level]) -> float:
+        """Returns the rest wavelength (ionization edge) in nm."""
+        delta_E_erg = levels[self.upper_level_index].energy - levels[self.lower_level_index].energy
+        return (h_CGS * c_CGS / delta_E_erg) * 1e7
+
+    def get_wavelength_grid(self, levels: List[Level]) -> np.ndarray:
+        raise NotImplementedError
+
+    def alpha(self, wavelength_nm: np.ndarray, levels: List[Level]) -> np.ndarray:
+        raise NotImplementedError
+
+@dataclass
+class ExplicitContinuum(Continuum):
+    upper_level_index: int
+    lower_level_index: int
+    type: str
+    photoionization_cross_section: List[Tuple[float, float]]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExplicitContinuum":
+        # Convert explicit data from m^2 to cm^2
+        pcs = [(float(w), float(c) * 1e4) for w, c in data.get('photoionization_cross_section', [])]
+        return cls(
+            upper_level_index=data['upper_level_index'],
+            lower_level_index=data['lower_level_index'],
+            type=data.get('type', 'ExplicitContinuum'),
+            photoionization_cross_section=pcs
+        )
+
+    def get_wavelength_grid(self, levels: List[Level]) -> np.ndarray:
+        grid = np.array([w for w, _ in self.photoionization_cross_section])
+        edge_nm = self.get_lambda_edge_nm(levels)
+        if edge_nm - grid[-1] > 0.1:
+            grid = np.append(grid, edge_nm)
+        elif grid[-1] > edge_nm:
+            grid = grid[grid <= edge_nm]
+            if len(grid) == 0 or edge_nm - grid[-1] > 0.01:
+                grid = np.append(grid, edge_nm)
+        return grid
+
+    def alpha(self, wavelength_nm: np.ndarray, levels: List[Level]) -> np.ndarray:
+        grid_nm = np.array([w for w, _ in self.photoionization_cross_section])
+        grid_alpha = np.array([a for _, a in self.photoionization_cross_section])
+        edge_nm = self.get_lambda_edge_nm(levels)
+        min_nm = grid_nm[0]
+
+        alpha_interp = np.interp(wavelength_nm, grid_nm, grid_alpha, left=0.0, right=0.0)
+        alpha_interp[wavelength_nm < min_nm] = 0.0
+        alpha_interp[wavelength_nm > edge_nm] = 0.0
+        alpha_interp[alpha_interp < 0.0] = 0.0
+        return alpha_interp
+
+@dataclass
+class HydrogenicContinuum(Continuum):
+    upper_level_index: int
+    lower_level_index: int
+    type: str
+    NlambdaGen: int
+    alpha0: float
+    minWavelength: float
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HydrogenicContinuum":
+        return cls(
+            upper_level_index=data['upper_level_index'],
+            lower_level_index=data['lower_level_index'],
+            type=data.get('type', 'HydrogenicContinuum'),
+            NlambdaGen=data['NlambdaGen'],
+            alpha0=data['alpha0'] * 1e4,  # Convert m^2 to cm^2
+            minWavelength=data['minWavelength']
+        )
+
+    def get_wavelength_grid(self, levels: List[Level]) -> np.ndarray:
+        edge_nm = self.get_lambda_edge_nm(levels)
+        return np.linspace(self.minWavelength, edge_nm, self.NlambdaGen)
+
+    def alpha(self, wavelength_nm: np.ndarray, levels: List[Level]) -> np.ndarray:
+        edge_nm = self.get_lambda_edge_nm(levels)
+
+        Z = levels[self.upper_level_index].ionization
+        nEff = Z * np.sqrt( E_Ryd_erg / (levels[self.upper_level_index].energy - levels[self.lower_level_index].energy))
+
+        gbf0 = gaunt_bf(edge_nm, nEff, Z)
+        gbf = gaunt_bf(wavelength_nm, nEff, Z)
+
+        alpha_vals = self.alpha0 * gbf / gbf0 * (wavelength_nm / edge_nm)**3
+        alpha_vals[wavelength_nm < self.minWavelength] = 0.0
+        alpha_vals[wavelength_nm > edge_nm] = 0.0
+        return alpha_vals
+
+def gaunt_bf(wvl, nEff, charge) -> float:
+    '''
+    Gaunt factor for bound-free transitions, from Seaton (1960), Rep. Prog.
+    Phys. 23, 313, as used in RH. COPIED FROM LW
+
+    Parameters
+    ----------
+    wvl : float or array-like
+        The wavelength at which to compute the Gaunt factor [nm].
+    nEff : float
+        Principal quantum number.
+    charge : float
+        Charge of free state.
+
+    Returns
+    -------
+    result : float or array-like
+        Gaunt factor for bound-free transitions.
+    '''
+    # /* --- M. J. Seaton (1960), Rep. Prog. Phys. 23, 313 -- ----------- */
+    # Copied from RH, ensuring vectorisation support
+    x = h_CGS * c_CGS / (wvl * 1e-7) / (E_Ryd_erg * charge**2)
+    x3 = x**(1.0/3.0)
+    nsqx = 1.0 / (nEff**2 *x)
+
+    return 1.0 + 0.1728 * x3 * (1.0 - 2.0 * nsqx) - 0.0496 * x3**2 \
+            * (1.0 - (1.0 - nsqx) * (2.0 / 3.0) * nsqx)
 @dataclass
 class Collision:
     """Represents a collisional transition between levels."""
@@ -166,7 +287,8 @@ class MultiLevelAtom:
 
             gl, gu = self.levels[line.lower_level_index].g, self.levels[line.upper_level_index].g
 
-            line.Aul = 8*np.pi**2 *q_e_CGS**2 *line.nu0**2 / (c_CGS**3*m_e_CGS) * (gl/gu) * line.oscillator_strength
+            line.Aul = 8*np.pi**2 *q_e_CGS**2 *line.nu0**2 / \
+                        (c_CGS**3*m_e_CGS) * (gl/gu) * line.oscillator_strength
             line.Bul = c_CGS**2/(2*h_CGS*line.nu0**3) * line.Aul
             line.Blu = line.Bul * (gu/gl)
 
@@ -237,8 +359,10 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
 
     # Generate the combined frequency set from continua and lines
     for atom in atoms:
+        # Dynamically fetch grids representing Continua transitions properly (Explicit and Hydrogenic)
         for cont in atom.continua:
-            for wl_nm, _ in cont.photoionization_cross_section:
+            wl_grid_nm = cont.get_wavelength_grid(atom.levels) 
+            for wl_nm in wl_grid_nm:
                 frequency_set.add(c_CGS / (wl_nm * 1e-7))
 
         # Generate and add frequencies for spectral lines in Doppler units
