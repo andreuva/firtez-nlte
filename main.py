@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid
-from formal_solver import plank, voigt
+from formal_solver import plank, voigt, formal_solution
 
 config_file = 'config_lw.json'
 # load the json configuration
@@ -204,7 +204,7 @@ for itteration in range(configuration["max_itterations"]):
             # compute the RT coeffs. in O
             # emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
             # Compute the outgoing intentensity at point O, and the MALI contribution Lambda_star_mu at point O.
-            # I_o, Lambda_star_mu = compute_RT_solver(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+            # I_o, Lambda_star_mu = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
 
             h_atom = next((a for a in atoms if a.name == "H"), None)
             # True ground state hydrogen mapping. Falls back to background total H if not existing in config.

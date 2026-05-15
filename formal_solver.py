@@ -27,8 +27,6 @@ def plank(frequency, temp):
         
     return Bnu
 
-
-
 def voigt(v, a):
     """
     Compute the Voigt profile for a list of frequencies (normalized)
@@ -71,3 +69,58 @@ def voigt(v, a):
         res[i] = t
 
     return res
+
+def formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O):
+
+    delta_tauMO = 0.5*(abs_M + abs_O)*np.abs(dz/ray) + vacuum_CGS
+    exp_tauMO = np.exp(-delta_tauMO)
+
+    S_m = emis_M / abs_M
+    S_o = emis_O / abs_O
+
+    # Small linear
+    small = (delta_tauMO < 1e-7)
+    exp_tauMO[small] = 1. - delta_tauMO[small] + 0.5*delta_tauMO[small]*delta_tauMO[small]
+
+    psi_m, psi_o = psi_lin(exp_tauMO, delta_tauMO)
+    I_o = I_m*exp_tauMO + psi_m*S_m + psi_o*S_o
+    #     I_m*np.exp(-delta_tauM) + \
+    #     (S_o - S_m)/delta_tauM * (delta_tauM - (1 - np.exp(-delta_tauM))) + \
+    #     S_m * (1 - np.exp(-delta_tauM))
+
+    # return I_o
+
+    # The local diagonal operator for this step is exactly psi_o
+    # (Since S_o = emis_O / abs_O, the derivative dI_o / dS_o is psi_o)
+    Lambda_star_mu = np.zeros_like(psi_o)
+    valid = abs_O > vacuum_CGS
+    Lambda_star_mu[valid] = psi_o[valid]
+
+    return I_o, Lambda_star_mu
+
+
+def psi_lin(exp_dtau,dtau):
+    """
+    Compute linear contributions
+    COPIED FROM ORIGINAL HE 1083 CODE
+    """
+
+    big = dtau > 0.10
+    small = dtau <= 0.10
+
+    psi_m = np.empty(dtau.shape)
+    psi_o = np.empty(dtau.shape)
+
+    psi_m[small] = ((dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]* \
+                    ((63e0 - 8e0*dtau[small])*dtau[small] - 432e0) + 2520e0) - \
+                    12096e0) + 45360e0) - 120960e0) + 181440e0))/362880e0)
+    psi_o[small] = ((dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]*(dtau[small]* \
+                   ((9e0 - dtau[small])*dtau[small] - 72e0) + 504e0) - \
+                    3024e0) + 15120e0) - 60480e0) + 181440e0))/362880e0)
+
+    psi_m[big] = (1.-exp_dtau[big]*(1.+dtau[big]))/dtau[big]
+    psi_o[big] = (exp_dtau[big]+dtau[big]-1.)/dtau[big]
+   #psi_m = (1.-exp_dtau*(1.+dtau))/dtau
+   #psi_o = (exp_dtau+dtau-1.)/dtau
+
+    return psi_m,psi_o
