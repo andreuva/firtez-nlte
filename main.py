@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid
-from formal_solver import plank, voigt, formal_solution
+from formal_solver import plank, voigt, formal_solution, get_RT_coefficients
 
 config_file = 'config_lw.json'
 # load the json configuration
@@ -17,19 +17,20 @@ with open(config_file) as f:
 print(f"Configuration loaded from {config_file}.")
 
 # Add a timestamp or unique identifier to the output directory to avoid overwriting previous runs
-if configuration.get("new_dir", True):
-    configuration["save_dir"] = f"outputs/{configuration['save_dir']}_{time.strftime('%Y_%m_%d_%H%M%S', time.localtime())}"
+if configuration.get("save_dir", False):
+    if configuration.get("new_dir", True):
+        configuration["save_dir"] = f"outputs/{configuration['save_dir']}_{time.strftime('%Y_%m_%d_%H%M%S', time.localtime())}"
 
-print(f"Output will be saved to: {configuration['save_dir']}")
-if not os.path.exists(configuration["save_dir"]):
-    os.makedirs(configuration["save_dir"])
+    print(f"Output will be saved to: {configuration['save_dir']}")
+    if not os.path.exists(configuration["save_dir"]):
+        os.makedirs(configuration["save_dir"])
 
-# copy the config file and all the executable files to the output directory for reference
-with open(os.path.join(configuration["save_dir"], os.path.basename(config_file)), 'w') as f_out:
-    json.dump(configuration, f_out, indent=2)
-for file in glob('*.py'):
-    shutil.copy2(file, os.path.join(configuration["save_dir"], file))
-print("Configuration and code files copied to output directory for reference.\n")
+    # copy the config file and all the executable files to the output directory for reference
+    with open(os.path.join(configuration["save_dir"], os.path.basename(config_file)), 'w') as f_out:
+        json.dump(configuration, f_out, indent=2)
+    for file in glob('*.py'):
+        shutil.copy2(file, os.path.join(configuration["save_dir"], file))
+    print("Configuration and code files copied to output directory for reference.\n")
 
 print("Starting NLTE model run...\n")
 
@@ -186,7 +187,7 @@ for itteration in range(configuration["max_itterations"]):
             iz_start, iz_end, step = atmosphere.Ndepth-1, -1, -1
             I_o = np.zeros_like(frequency_grid)
         
-        # emis_O, abs_O = get_RT_coefficients(iz_start, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+        emis_O, abs_O = get_RT_coefficients(iz_start, frequency_grid, weigths_freq_grid, atoms, atmosphere)
         
         # Solve RT along the ray to integrate Js and other quantities.
         for iz in range(iz_start + step, iz_end, step):
@@ -199,17 +200,16 @@ for itteration in range(configuration["max_itterations"]):
 
             # move the O point to M
             I_m = I_o.copy()
-            # emis_M, abs_M = emis_O.copy(), abs_O.copy()
+            emis_M, abs_M = emis_O.copy(), abs_O.copy()
 
             # compute the RT coeffs. in O
-            # emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+            emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
             # Compute the outgoing intentensity at point O, and the MALI contribution Lambda_star_mu at point O.
-            # I_o, Lambda_star_mu = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+            I_o, _ = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
 
             h_atom = next((a for a in atoms if a.name == "H"), None)
             # True ground state hydrogen mapping. Falls back to background total H if not existing in config.
             nHGround = h_atom.populations[iz, 0] if h_atom else atmosphere.nh[iz]
-
 
             # go trhough all the active atoms
             for atom in atoms:
@@ -238,13 +238,11 @@ for itteration in range(configuration["max_itterations"]):
                         else:
                             raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
-
                     a_damp = total_damping / (4 * np.pi * atom.doppler_widths[iz, il])
-
                     voigt_line = voigt(dop_freq, a_damp).real
                     voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
 
-                    # # Sum the intensity over the wavelength
+                    # Sum the intensity over the wavelength
                     atom.Js[iz, il] += np.sum(weigths[ir]*weigths_freq_grid*I_o*voigt_norm)
                     # # Integrate the Lambda operator
                     # atom.Lambda_star_bar[iz, il] += np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)

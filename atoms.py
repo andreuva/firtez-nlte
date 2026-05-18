@@ -232,6 +232,7 @@ class MultiLevelAtom:
     irwin_coefficients: Dict[int, List[float]] = field(default_factory=dict)
 
     populations: np.ndarray = field(init=False, default_factory=lambda: np.array([]))
+    lte_populations: np.ndarray = field(init=False, default_factory=lambda: np.array([]))
     Js: np.ndarray = field(init=False, default_factory=lambda: np.array([])) # Mean line-integrated intensities
     
     photoionization_rates: np.ndarray = field(init=False, default_factory=lambda: np.array([]))
