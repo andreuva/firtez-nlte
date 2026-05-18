@@ -282,3 +282,100 @@ for itteration in range(configuration["max_itterations"]):
         break
 # #################################################################################
 
+# =============================================================================
+# FINAL FORMAL SOLUTION — compute the emergent spectrum with converged populations
+# for a single vertical ray (μ = 1, θ = 0) and save all results.
+# =============================================================================
+print("\n" + "==" * 50)
+print("Computing final formal solution with converged populations (μ=1)...")
+print("==" * 50 + "\n")
+
+ray_mu1 = 0.0  # inclination angle in radians (vertically upward)
+# Upward ray: start from the bottom (deepest point), propagate upward
+I_o = plank(frequency_grid, atmosphere.temp[0])
+emis_O, abs_O = get_RT_coefficients(0, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+for iz in range(1, atmosphere.Ndepth):
+    dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
+
+    I_m = I_o.copy()
+    emis_M, abs_M = emis_O.copy(), abs_O.copy()
+    
+    emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+    I_o, _ = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+
+# I_o now contains the emergent intensity at μ=1
+I_disk_centre = I_o
+wavelength_grid_nm_final = (c_CGS / frequency_grid) * 1e7  # cm to nm
+
+# ---- Save results to disk ----
+if configuration.get("save_dir", False):
+    print(f"Saving results to {configuration["save_dir"]}...")
+
+    # Save the frequency and wavelength grids
+    np.save(os.path.join(configuration["save_dir"], "frequency_grid_hz.npy"), frequency_grid)
+    np.save(os.path.join(configuration["save_dir"], "wavelength_grid_nm.npy"), wavelength_grid_nm_final)
+
+    # Save emergent intensity at mu=1 [n_freq]
+    np.save(os.path.join(configuration["save_dir"], "emergent_intensity_mu1.npy"), I_disk_centre)
+
+    # Save converged populations, LTE populations, and Js for each atom
+    for atom in atoms:
+        np.save(os.path.join(configuration["save_dir"], f"populations_{atom.name}.npy"), atom.populations)
+        np.save(os.path.join(configuration["save_dir"], f"lte_populations_{atom.name}.npy"), atom.lte_populations)
+        np.save(os.path.join(configuration["save_dir"], f"Js_{atom.name}.npy"), atom.Js)
+
+if configuration.get("debug", False):
+    # Disk-centre emergent spectrum (μ=1 ray)
+    wavelength_nm_plot = np.flip(wavelength_grid_nm_final)
+    I_plot = np.flip(I_disk_centre)
+
+    # Global spectrum overview
+    plt.figure(figsize=(12, 5), dpi=100)
+    plt.plot(wavelength_nm_plot, I_plot, 'k-', linewidth=0.5)
+    plt.xlabel("Wavelength (nm)")
+    plt.ylabel("Intensity (erg s$^{-1}$ cm$^{-2}$ Hz$^{-1}$ sr$^{-1}$)")
+    plt.title("Emergent Spectrum (disk centre, μ=1)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(configuration["save_dir"], "emergent_spectrum_overview.png"))
+    plt.close()
+
+    # Zoom into each line
+    for iat, atom in enumerate(atoms):
+        for il, line in enumerate(atom.lines):
+            line_wl_nm = line.lambda0 * 1e7  # cm -> nm
+            wl_window = 1.0  # nm half-width for zoom
+            mask_wl = (wavelength_nm_plot > line_wl_nm - wl_window) & (wavelength_nm_plot < line_wl_nm + wl_window)
+
+            if not np.any(mask_wl):
+                continue
+
+            plt.figure(figsize=(8, 5), dpi=100)
+            plt.plot(wavelength_nm_plot[mask_wl], I_plot[mask_wl], 'k-', linewidth=1)
+            plt.axvline(line_wl_nm, color='red', linestyle=':', alpha=0.5, label=f"$\\lambda_0$ = {line_wl_nm:.2f} nm")
+            plt.xlabel("Wavelength (nm)")
+            plt.ylabel("Intensity (erg s$^{-1}$ cm$^{-2}$ Hz$^{-1}$ sr$^{-1}$)")
+            plt.title(f"Emergent Line Profile — {atom.name}, {line_wl_nm:.2f} nm")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(configuration["save_dir"], f"emergent_line_{atom.name}_line{il}.png"))
+            plt.close()
+
+    # Final converged population profiles vs height
+    for iat, atom in enumerate(atoms):
+        plt.figure(figsize=(10, 7.5), dpi=100)
+        for i in range(atom.populations.shape[-1]):
+            plt.plot(atmosphere.zgrid / 1e5, atom.populations[:, i], '-', color=f'C{i}',
+                    label=f"NLTE Level {i}")
+            plt.plot(atmosphere.zgrid / 1e5, atom.lte_populations[:, i], 'o', color=f'C{i}',
+                    alpha=0.5, label=f"LTE  Level {i}")
+        plt.xlabel("Height (km)")
+        plt.ylabel("Population (cm$^{-3}$)")
+        plt.yscale("log")
+        # plt.xscale("log")
+        plt.title(f"Converged Populations — {atom.name}")
+        plt.legend(fontsize=7, loc='upper center', bbox_to_anchor=(0.5, 1.12), ncol=4, edgecolor='none', framealpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(configuration["save_dir"], f"final_populations_{atom.name}.png"))
+        plt.close()
+
+    print("Done! All results saved.")

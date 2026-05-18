@@ -1,9 +1,10 @@
 import numpy as np
 from constants import *
+from typing import TYPE_CHECKING, List, Dict, Tuple
 
-from typing import TYPE_CHECKING, List, Dict
 from atoms import MultiLevelAtom
 from atmosphere import Atmosphere
+from chemeq import XII
 
 def plank(frequency, temp):
     """
@@ -140,9 +141,9 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
                 (n_l - n_u*(n_l_star/n_u_star)*stim_factor)
 
     # Add continuum contribution
-    # eta_c, kappa_c = add_background_opacity(iz, freq_grid, atoms, atmosphere)
-    # emis += eta_c
-    # abs += kappa_c
+    emis_c, abs_c = add_background_opacity(iz, freq_grid, atoms, atmosphere)
+    emis += emis_c
+    abs += abs_c
     
     # Sanity check for negative absorptions or emissivities
     if np.any(emis < 0):
@@ -153,6 +154,182 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
         # abs = np.maximum(abs, vacuum_CGS)
 
     return emis, abs
+
+def add_background_opacity(iz: int, 
+                            freq_grid: np.ndarray, 
+                            atoms: List[MultiLevelAtom], 
+                            atmosphere: Atmosphere) -> Tuple[np.ndarray, np.ndarray]:
+    
+    emis_c = np.zeros_like(freq_grid)
+    abs_c = np.zeros_like(freq_grid)
+
+    # B_nu and related terms
+    B_nu = plank(freq_grid, atmosphere.temp[iz])
+    n_H_I = atmosphere.nh[iz]
+    
+    if n_H_I > 0.0:
+        # H- bound-free (John 1989 fit, includes stimulated emission)
+        # Returns kappa_bf / n_H
+        abs_h_bf_per_H_minus = opac_h_minus_bf_john1989(freq_grid, atmosphere.temp[iz], atmosphere.ne[iz])
+        abs_h_bf = abs_h_bf_per_H_minus * n_H_I
+        emis_h_bf = abs_h_bf * B_nu # Assumes S_nu(H-) = B_nu
+        
+        emis_c += emis_h_bf
+        abs_c += abs_h_bf
+
+        # H- free-free (John 1989 fit)
+        # Returns alpha_ff / n_H
+        abs_h_ff_per_H_minus = opac_h_minus_ff_john1989(freq_grid, atmosphere.temp[iz], atmosphere.ne[iz])
+        abs_h_ff = abs_h_ff_per_H_minus * n_H_I
+        emis__h_ff = abs_h_ff * B_nu # Assumes S_nu(H-) = B_nu
+        
+        emis_c += emis__h_ff
+        abs_c += abs_h_ff
+    
+    # --- Scattering (Thomson & Rayleigh) ---
+    # Thomson scattering (electrons)
+    kappa_thomson = atmosphere.ne[iz] * (8*np.pi/3)*((q_e_CGS/c_CGS)**4)/m_e_CGS**2
+    emis_c += kappa_thomson * B_nu #* J_nu
+    abs_c += kappa_thomson
+    
+    # Rayleigh scattering (H I)
+    # Ported from cont_opacity.f90 (Dalgarno 1962 fit)
+    if n_H_I > 0.0:
+        sigma_rayleigh = opac_rayleigh_h_dalgarno(freq_grid)
+        kappa_rayleigh = n_H_I * sigma_rayleigh
+        
+        emis_c += kappa_rayleigh * B_nu #* J_nu
+        abs_c += kappa_rayleigh
+
+    return emis_c, abs_c
+
+def opac_h_minus_bf_john1989(freq: np.ndarray, T: float, n_e: float) -> np.ndarray:
+    """
+    Port of OPAC_HMINUS_BF from cont_opacity.f90 (John 1989).
+    Calculates H- bound-free opacity per H atom [cm^2],
+    including stimulated emission.
+    kappa_bf(nu) / n_HI
+    """
+    lambda_A = (c_CGS / freq) * 1e8
+    lambda_mic = lambda_A / 1e4
+
+    opacity_per_HI = np.zeros_like(lambda_mic)
+    
+    # Constants from OPAC_HMINUS_BF
+    LAMBDAP = 1.6419  # microns (16419 A)
+    valid_lambda = lambda_mic[lambda_mic < LAMBDAP]
+
+    CTE = 0.75e-18
+
+    ALPHA = (h_CGS * c_CGS / kB_CGS) * 1e4 # h*c/k in (K * micron)
+    CC = np.array([152.519, 49.534, -118.858, 92.536, -34.194, 4.982])
+   
+    com_l = (1.0 / valid_lambda) - (1.0 / LAMBDAP)
+    # Cross-section per H- ion
+    # SIGMA = CC(1) + CC(2)*COM**0.5D0 + CC(3)*COM + CC(4)*COM**1.5D0 + CC(5)*COM**2D0 + CC(6)*COM**2.5D0
+    sigma = ( CC[0] +
+              CC[1] * com_l**0.5 +
+              CC[2] * com_l +
+              CC[3] * com_l**1.5 +
+              CC[4] * com_l**2.0 +
+              CC[5] * com_l**2.5 )
+    # SIGMA = CTE*SIGMA*LAMBDA0MIC**3D0*COM**1.5D0
+    sigma = CTE * sigma * (valid_lambda**3) * (com_l**1.5)
+
+    # PART = T**(-2.5D0)*DEXP(ALPHA/(T*LAMBDAP))*(1D0-DEXP(-ALPHA/(T*LAMBDA0MIC)))
+    part =  T**(-2.5)*np.exp(ALPHA/(T*LAMBDAP))*(1.0-np.exp(-ALPHA/(T*valid_lambda)))
+    
+    # Opacity per H atom (kappa_bf / n_HI)
+    # OPAC = PART*SIGMA*NE*KBOL*T
+    P_e = n_e * kB_CGS * T
+    opacity_per_HI[lambda_mic < LAMBDAP] = part * sigma * P_e
+
+    if not np.any(lambda_mic < LAMBDAP):
+        print("Warning: No wavelengths to compute H- bf opacity, set to 0.")
+    
+    return opacity_per_HI
+
+def opac_h_minus_ff_john1989(freq: np.ndarray, T: float, n_e: float) -> np.ndarray:
+    """
+    Port of OPAC_HMINUS_FF from cont_opacity.f90 (John 1989).
+    Calculates H- free-free opacity per H atom [cm^2].
+    alpha_ff(nu) / n_HI
+    """
+    lambda_A = (c_CGS / freq) * 1e8
+    lambda_mic = lambda_A / 1e4
+    theta = 5040.0 / T
+    
+    # Coefficients from OPAC_HMINUS_FF
+    A1 = np.array([0.0, 2483.346, -3449.889, 2200.04, -696.271, 88.283])
+    B1 = np.array([0.0, 285.827, -1158.382, 2427.719, -1841.4, 444.517])
+    C1 = np.array([0.0, -2054.291, 8746.523, -13651.105, 8624.97, -1863.864])
+    D1 = np.array([0.0, 2827.776, -11485.632, 16755.524, -10051.53, 2095.288])
+    E1 = np.array([0.0, -1341.537, 5303.609, -7510.494, 4400.067, -901.788])
+    F1 = np.array([0.0, 208.952, -812.939, 1132.738, -655.02, 132.985])
+    
+    A2 = np.array([518.1021, 473.2636, -482.2089, 115.5291])
+    B2 = np.array([-734.8666, 1443.4137, -737.1616, 169.6374])
+    C2 = np.array([1021.1775, -1977.3395, 1096.8827, -245.649])
+    D2 = np.array([-479.0721, 922.3575, -521.1341, 114.243])
+    E2 = np.array([93.1373, -178.9275, 101.7963, -21.9972])
+    F2 = np.array([-6.4285, 12.36, -7.0571, 1.5097])
+
+    part1 = np.zeros_like(lambda_mic)
+
+    # Branch lambda_mic < 0.3645
+    if np.any(lambda_mic < 0.3645):
+        l = lambda_mic[lambda_mic < 0.3645]
+
+        com2 = ( A2[np.newaxis, :] * (l**2)[:, np.newaxis] +
+                 B2[np.newaxis, :] +
+                 C2[np.newaxis, :] / (l)[:, np.newaxis] +
+                 D2[np.newaxis, :] / (l**2)[:, np.newaxis] +
+                 E2[np.newaxis, :] / (l**3)[:, np.newaxis] +
+                 F2[np.newaxis, :] / (l**4)[:, np.newaxis] )
+        
+        theta_pows = np.array([theta**p for p in [1.0, 1.5, 2.0, 2.5]])
+        part1[lambda_mic < 0.3645] = np.dot(com2, theta_pows)
+
+    if np.any(lambda_mic >= 0.3645):
+        l = lambda_mic[lambda_mic >= 0.3645]
+        
+        com1 = ( A1[np.newaxis, :] * (l**2)[:, np.newaxis] +
+                 B1[np.newaxis, :] +
+                 C1[np.newaxis, :] / (l)[:, np.newaxis] +
+                 D1[np.newaxis, :] / (l**2)[:, np.newaxis] +
+                 E1[np.newaxis, :] / (l**3)[:, np.newaxis] +
+                 F1[np.newaxis, :] / (l**4)[:, np.newaxis] )
+        
+        theta_pows = np.array([theta**p for p in [1.0, 1.5, 2.0, 2.5, 3.0, 3.5]])
+        part1[lambda_mic >= 0.3645] = np.dot(com1, theta_pows)  
+    
+    # Opacity per H atom (alpha_ff / n_HI)
+    # The Fortran code calculates: 1e-29 * PART1 * (KBOL * NE * T)
+    # This is (alpha_ff / (n_HI * P_e)) * P_e = alpha_ff / n_HI
+    P_e = n_e * kB_CGS * T
+    opacity_per_HI = 1e-29 * part1 * P_e
+
+    # if np.any(lambda_A < 1800.0):
+        # raise ValueError("Wavelengths for H- opacities should be > 1800 Amstrongs")
+
+    opacity_per_HI[lambda_A < 1800.0] = 0.0 # From Fortran check
+    
+    return opacity_per_HI
+
+def opac_rayleigh_h_dalgarno(freq: np.ndarray) -> np.ndarray:
+    """
+    Port of OPAC_RAYLEIGH_H from cont_opacity.f90 (Dalgarno 1962).
+    Calculates Rayleigh scattering cross-section per H atom [cm^2].
+    """
+    lambdaA = (c_CGS / freq) * 1e8
+
+    # Coefficients from OPAC_RAYLEIGH_H
+    CC = np.array([5.799e-13, 1.422e-6, 2.784])
+    
+    # OPAC = (CC(1)+(CC(2)+CC(3)/LAMBDA0**2D0) / LAMBDA0**2D0) / LAMBDA0**4D0   
+    sigma =  (CC[0]+(CC[1]+CC[2]/lambdaA**2.0) /  lambdaA**2.0) / lambdaA**4.0
+
+    return sigma
 
 # --------------------------------------------------------------------------
 # Formal solution with linear Short Characteristics and MALI

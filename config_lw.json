@@ -6,7 +6,7 @@
     "n_gaus": 8
   },
   "max_wavelength_resolution_nm": 0.0005,
-  "min_wavelength_resolution_nm": 50,
+  "min_wavelength_resolution_nm": 25,
   "max_itterations": 200,
   "max_tolerance": 0.0001,
   "atoms": [
@@ -1044,7 +1044,7 @@
     }
   ],
   "atmosphere": {
-    "turbulent_velocity": 489586.3060975609,
+    "turbulent_velocity": 3e5,
     "zgrid": [
       0.0, 10.49102775371354, 20.98172505144682, 31.472333633449395,
       41.9630645218282, 52.45383476806386, 62.944812733888625,
