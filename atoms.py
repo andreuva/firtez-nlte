@@ -293,6 +293,8 @@ class MultiLevelAtom:
             line.Bul = c_CGS**2/(2*h_CGS*line.nu0**3) * line.Aul
             line.Blu = line.Bul * (gu/gl)
 
+            # print(f"Initialized line {line.type} with nu0={line.nu0:.3e} Hz, lambda0={line.lambda0:.3e} cm, Aul={line.Aul:.3e}, Bul={line.Bul:.3e}, Blu={line.Blu:.3e} for atom {self.name}.")
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MultiLevelAtom":
         """Factory method to create a MultiLevelAtom from a dictionary."""

@@ -3,7 +3,7 @@ import numpy as np
 from typing import Dict, Any
 from constants import *
 from atoms import MultiLevelAtom
-from chemeq import compute_background_eos, get_partition_functions, ABUND#, partition_function
+from chemeq import compute_background_eos, compute_background_species, get_partition_functions, ABUND#, partition_function
 
 def get_angular_quadrature_1D(n_gauss):
     """
@@ -78,6 +78,10 @@ class Atmosphere:
         self.nh = calculated_nh.copy() # self.pg/(self.temp*kB_CGS) - self.ne
         # ABUND[1] corresponds to Helium (Z=2). Abundances are log10 where H=12.0
         self.he_abund = 10.0**(ABUND[1] - 12.0)
+
+        # Compute background opacity species populations (n/U for each species)
+        print("Computing background opacity species populations...")
+        self.bg_species = compute_background_species(self.temp, self.pg, self.ne_bg, self.nh)
 
 def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.ndarray:
     """

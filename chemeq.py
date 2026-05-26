@@ -482,6 +482,194 @@ def compute_background_eos(temp_array: np.ndarray, pg_array: np.ndarray) -> tupl
         
     return ne_out, nh_out
 
+
+# =====================================================================
+# Indices (0-based, Z-1) in the element tables for opacity species
+# =====================================================================
+_Z_IDX = {  # element symbol -> 0-based index in XI/XII/ABUND/MATOM
+    'H':  0, 'He': 1, 'C':  5, 'N':  6, 'O':  7,
+    'Mg': 11, 'Al': 12, 'Si': 13, 'Ca': 19, 'Fe': 25,
+}
+
+# The Wittmann saha() constant:  log10[ (2 pi me k / h^2)^1.5 ]  in CGS with Pe [dyne cm^-2]
+_SAHA_LOG10_FAC = 9.0804625434325867
+
+
+def _saha_ratio_neutral_to_ion(theta: float, eion_eV: float,
+                                U_neutral: float, U_ion: float,
+                                Pe: float) -> float:
+    """
+    Returns n(neutral)/n(ion) via the Wittmann saha() formula.
+    Exactly mirrors wittmann.saha() but inverted so that large return values
+    mean mostly neutral gas.
+    """
+    ratio_ion_to_neutral = (U_ion * 10.0**(_SAHA_LOG10_FAC - theta * eion_eV)
+                            / (U_neutral * Pe * theta**2.5))
+    return 1.0 / max(ratio_ion_to_neutral, 1.0e-300)
+
+
+def _molecb(theta: float):
+    """
+    Wittmann polynomial fits for molecular equilibrium constants.
+    Returns log10(P_H2 / P_H^2)  and  log10(P_H2+ / [P_H * P_H+]).
+    Mirrors wittmann.molecb().
+    """
+    Y_H2  = -11.206998 + theta * (2.7942767 + theta * (7.9196803e-2 - theta * 2.4790744e-2))
+    Y_H2p = -12.533505 + theta * (4.9251644 + theta * (-5.6191273e-2 + theta * 3.2687661e-3))
+    return Y_H2, Y_H2p
+
+
+def compute_background_species(temp_array: np.ndarray,
+                                pg_array: np.ndarray,
+                                ne_array: np.ndarray,
+                                nh_array: np.ndarray) -> dict:
+    """
+    Given converged ne and nh from compute_background_eos, compute the
+    number densities of every species required by the Wittmann continuous
+    background-opacity functions.
+
+    All densities labelled ``_per_U`` are divided by their partition function
+    U(T), exactly as Wittmann's get_background_partials(divide_by_u=True).
+
+    Returns
+    -------
+    dict with keys (each value is a 1-D array of shape (Ndepth,)):
+        n_HI_per_U  : n(H I) / U(H I)          [cm^-3]
+        n_HII       : n(H+)                      [cm^-3]
+        n_Hminus    : n(H-)                      [cm^-3]
+        n_H2        : n(H2)                      [cm^-3]
+        n_HeI_per_U : n(He I) / U(He I)         [cm^-3]
+        n_HeII_per_U: n(He+) / U(He+)           [cm^-3]
+        n_HeIII     : n(He++)                    [cm^-3]
+        n_CI_per_U  : n(C I) / U(C I)           [cm^-3]
+        n_NI_per_U  : n(N I) / U(N I)           [cm^-3]
+        n_OI_per_U  : n(O I) / U(O I)           [cm^-3]
+        n_MgI_per_U : n(Mg I) / U(Mg I)         [cm^-3]
+        n_MgII_per_U: n(Mg+) / U(Mg+)           [cm^-3]
+        n_AlI_per_U : n(Al I) / U(Al I)         [cm^-3]
+        n_SiI_per_U : n(Si I) / U(Si I)         [cm^-3]
+        n_SiII_per_U: n(Si+) / U(Si+)           [cm^-3]
+        n_CaII_per_U: n(Ca+) / U(Ca+)           [cm^-3]
+        n_FeI_per_U : n(Fe I) / U(Fe I)         [cm^-3]
+    """
+    Ndepth = len(temp_array)
+    CSAHA1 = (h_CGS**2 / (2.0 * np.pi * m_e_CGS * kB_CGS))**1.5
+    CSAHA2 = eV_CGS / kB_CGS           # converts eV -> K
+
+    keys = ['n_HI_per_U', 'n_HII', 'n_Hminus', 'n_H2',
+            'n_HeI_per_U', 'n_HeII_per_U', 'n_HeIII',
+            'n_CI_per_U', 'n_NI_per_U', 'n_OI_per_U',
+            'n_MgI_per_U', 'n_MgII_per_U', 'n_AlI_per_U',
+            'n_SiI_per_U', 'n_SiII_per_U', 'n_CaII_per_U',
+            'n_FeI_per_U']
+    result = {k: np.zeros(Ndepth) for k in keys}
+
+    for k in range(Ndepth):
+        T    = temp_array[k]
+        ne   = max(ne_array[k], 1.0e-30)
+        nh   = nh_array[k]
+        Pe   = ne * kB_CGS * T
+        theta = 5040.0 / T
+        lamelec = CSAHA1 * T**(-1.5)
+
+        # ------------------------------------------------------------------
+        # HYDROGEN  (H-, H I, H II)
+        # ------------------------------------------------------------------
+        # Wittmann uses U(H I) = 2.0 (ground-state statistical weight g=2).
+        # chemeq.get_partition_functions(1, T) returns UI=1.0 for the continuum
+        # excited-state correction; we must use 2.0 to match wittmann.gasc().
+        UI_H  = 2.0   # Wittmann convention
+        UII_H = 1.0   # U(H+) = 1
+
+        # Saha: H I -> H+ + e-  (ionisation potential = XII[0] = 13.595 eV)
+        alpha1_H = (UI_H / (2.0 * UII_H)) * lamelec * np.exp(
+            np.clip(CSAHA2 * XII[0] / T, -650.0, 650.0))
+        frac_ion_H = 1.0 / max(ne * alpha1_H, 1.0e-300)  # n(H+)/n(H I)
+        n_HI  = nh / (1.0 + frac_ion_H)
+        n_HII = nh * frac_ion_H / (1.0 + frac_ion_H)
+
+        result['n_HI_per_U'][k] = n_HI / UI_H   # = n_HI / 2
+        result['n_HII'][k]      = n_HII
+
+        # Saha: H I + e- -> H-  (electron affinity = XI[0] = 0.754 eV)
+        # ratio p(H)/p(H-) mirrors wittmann.saha(theta, 0.754, U_H-=1, U_H=2, Pe)
+        ratio_H_to_Hminus = (UI_H * 10.0**(_SAHA_LOG10_FAC - theta * XI[0])
+                             / (1.0 * Pe * theta**2.5))
+        result['n_Hminus'][k] = n_HI / max(ratio_H_to_Hminus, 1.0e-300)
+
+        # Molecular hydrogen H2 via Wittmann's molecb polynomial
+        # log10(P_H2 / P_H^2) = Y_H2
+        Y_H2, _ = _molecb(theta)
+        P_HI = n_HI * kB_CGS * T                      # partial pressure of H I
+        P_H2 = P_HI**2 * 10.0**np.clip(Y_H2, -300.0, 300.0)
+        result['n_H2'][k] = P_H2 / (kB_CGS * T)      # ideal gas
+
+        # ------------------------------------------------------------------
+        # HELIUM  (He I, He+, He++)
+        # ------------------------------------------------------------------
+        UI_He, UII_He, UIII_He = get_partition_functions(2, T)
+        i_He = _Z_IDX['He']
+        # alpha: n_e * alpha = n_neutral / n_ion
+        a1_He = (UI_He  / (2.0 * UII_He )) * lamelec * np.exp(
+                 np.clip(CSAHA2 * XI[i_He]  / T, -650.0, 650.0))
+        a2_He = (UII_He / (2.0 * UIII_He)) * lamelec * np.exp(
+                 np.clip(CSAHA2 * XII[i_He] / T, -650.0, 650.0))
+
+        n_He_total = nh * 10.0**(ABUND[i_He] - 12.0)
+        ne_a1 = ne * a1_He
+        ne_a2 = ne * a2_He
+        f_I_He   = n_He_total / (1.0 + 1.0/ne_a1 * (1.0 + 1.0/ne_a2))
+        f_II_He  = n_He_total / (ne_a1 + 1.0 + 1.0/ne_a2)
+        f_III_He = n_He_total / (1.0 + ne_a2 * (ne_a1 + 1.0))
+
+        result['n_HeI_per_U'][k]  = f_I_He   / max(UI_He,   1.0)
+        result['n_HeII_per_U'][k] = f_II_He  / max(UII_He,  1.0)
+        result['n_HeIII'][k]      = f_III_He
+
+        # ------------------------------------------------------------------
+        # METAL NEUTRALS  (C, N, O, Mg, Al, Si, Fe)
+        #   returns n(neutral)/U and n(singly-ionised)/U
+        # ------------------------------------------------------------------
+        def _metal(sym, key_I, key_II=None):
+            idx = _Z_IDX[sym]
+            UI_m, UII_m, UIII_m = get_partition_functions(idx + 1, T)
+            a1_m = (UI_m  / (2.0 * UII_m )) * lamelec * np.exp(
+                    np.clip(CSAHA2 * XI[idx]  / T, -650.0, 650.0))
+            a2_m = (UII_m / (2.0 * UIII_m)) * lamelec * np.exp(
+                    np.clip(CSAHA2 * XII[idx] / T, -650.0, 650.0))
+            nt_m = nh * 10.0**(ABUND[idx] - 12.0)
+            ne_a1_m = ne * a1_m
+            ne_a2_m = ne * a2_m
+            nI_m  = nt_m / (1.0 + 1.0/ne_a1_m * (1.0 + 1.0/ne_a2_m))
+            result[key_I][k] = nI_m / max(UI_m, 1.0)
+            if key_II is not None:
+                nII_m = nt_m / (ne_a1_m + 1.0 + 1.0/ne_a2_m)
+                result[key_II][k] = nII_m / max(UII_m, 1.0)
+
+        _metal('C',  'n_CI_per_U')
+        _metal('N',  'n_NI_per_U')
+        _metal('O',  'n_OI_per_U')
+        _metal('Mg', 'n_MgI_per_U', 'n_MgII_per_U')
+        _metal('Al', 'n_AlI_per_U')
+        _metal('Si', 'n_SiI_per_U', 'n_SiII_per_U')
+        _metal('Fe', 'n_FeI_per_U')
+
+        # Ca: only the singly-ionised stage (Ca II) is needed by LUKEOP
+        idx_Ca = _Z_IDX['Ca']
+        UI_Ca, UII_Ca, UIII_Ca = get_partition_functions(idx_Ca + 1, T)
+        a1_Ca = (UI_Ca  / (2.0 * UII_Ca )) * lamelec * np.exp(
+                 np.clip(CSAHA2 * XI[idx_Ca]  / T, -650.0, 650.0))
+        a2_Ca = (UII_Ca / (2.0 * UIII_Ca)) * lamelec * np.exp(
+                 np.clip(CSAHA2 * XII[idx_Ca] / T, -650.0, 650.0))
+        nt_Ca = nh * 10.0**(ABUND[idx_Ca] - 12.0)
+        ne_a1_Ca = ne * a1_Ca
+        ne_a2_Ca = ne * a2_Ca
+        nII_Ca = nt_Ca / (ne_a1_Ca + 1.0 + 1.0/ne_a2_Ca)
+        result['n_CaII_per_U'][k] = nII_Ca / max(UII_Ca, 1.0)
+
+    return result
+
+
 # def partition_function(atom: MultiLevelAtom, stage: int, T: float) -> float:
 #     """
 #     Computes the Irwin partition function for a specific ionization stage at temperature T.

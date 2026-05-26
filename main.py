@@ -290,21 +290,43 @@ print("\n" + "==" * 50)
 print("Computing final formal solution with converged populations (μ=1)...")
 print("==" * 50 + "\n")
 
-ray_mu1 = 0.0  # inclination angle in radians (vertically upward)
+ray_mu1 = 1.0   # vertically outgoing ray
 # Upward ray: start from the bottom (deepest point), propagate upward
+tau_depth = np.zeros((atmosphere.Ndepth, len(frequency_grid)))
+source_func = np.zeros_like(tau_depth)
+plank_func = np.zeros_like(tau_depth)
+
 I_o = plank(frequency_grid, atmosphere.temp[0])
 emis_O, abs_O = get_RT_coefficients(0, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+tau_depth[0,:] = abs_O * (atmosphere.zgrid[1] - atmosphere.zgrid[0]) / ray_mu1  # zero, but for consistency
+source_func[0,:] = emis_O / np.maximum(abs_O, 1e-100)
+plank_func[0,:] = plank(frequency_grid, atmosphere.temp[0])
+emis_depth = np.zeros_like(tau_depth)
+abs_depth = np.zeros_like(tau_depth)
+emis_depth[0,:] = emis_O
+abs_depth[0,:] = abs_O
+
 for iz in range(1, atmosphere.Ndepth):
-    dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
+    dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - 1]   # always positive (upward)
 
     I_m = I_o.copy()
     emis_M, abs_M = emis_O.copy(), abs_O.copy()
     
     emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
-    I_o, _ = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+    delta_tau = 0.5 * (abs_M + abs_O) * np.abs(dz / ray_mu1)
+    tau_depth[iz, :] = tau_depth[iz - 1, :] + delta_tau
+    source_func[iz, :] = emis_O / np.maximum(abs_O, 1e-100)
+    plank_func[iz, :] = plank(frequency_grid, atmosphere.temp[iz])
+    emis_depth[iz, :] = emis_O
+    abs_depth[iz, :] = abs_O
+
+    I_o, _ = formal_solution(ray_mu1, I_m, dz, emis_M, emis_O, abs_M, abs_O)
 
 # I_o now contains the emergent intensity at μ=1
 I_disk_centre = I_o
+# tau_depth[iz, :] == optical depth from the bottom up to layer iz.
+# The surface value tau_depth[-1, :] is the total optical depth of the whole atmosphere.
+tau_surface = np.log10(tau_depth[-1, :])
 wavelength_grid_nm_final = (c_CGS / frequency_grid) * 1e7  # cm to nm
 
 # ---- Save results to disk ----
@@ -317,6 +339,12 @@ if configuration.get("save_dir", False):
 
     # Save emergent intensity at mu=1 [n_freq]
     np.save(os.path.join(configuration["save_dir"], "emergent_intensity_mu1.npy"), I_disk_centre)
+
+    # Save optical depth arrays from the vertical (μ=1) formal solution
+    # tau_depth : shape (Ndepth, Nfreq)  – cumulative τ from bottom up to each layer
+    # tau_surface: shape (Nfreq,)        – total column optical depth
+    np.save(os.path.join(configuration["save_dir"], "optical_depth_vs_depth_mu1.npy"), tau_depth)
+    np.save(os.path.join(configuration["save_dir"], "optical_depth_total_mu1.npy"),   tau_surface)
 
     # Save converged populations, LTE populations, and Js for each atom
     for atom in atoms:
@@ -358,6 +386,113 @@ if configuration.get("debug", False):
             plt.legend()
             plt.tight_layout()
             plt.savefig(os.path.join(configuration["save_dir"], f"emergent_line_{atom.name}_line{il}.png"))
+            plt.close()
+
+    # ---- Optical depth diagnostic plots ----
+    # Total optical depth vs wavelength
+    wl_nm_plot_od = np.flip(wavelength_grid_nm_final)
+    tau_surf_plot  = np.flip(tau_surface)
+
+    plt.figure(figsize=(12, 5), dpi=100)
+    plt.semilogy(wl_nm_plot_od, tau_surf_plot, 'b-', linewidth=0.7)
+    plt.xlabel("Wavelength (nm)")
+    plt.ylabel(r"$log_{10}(\tau_\nu)$")
+    plt.tight_layout()
+    plt.savefig(os.path.join(configuration["save_dir"], "optical_depth_total_spectrum.png"))
+    # plt.show()
+    plt.close()
+
+    # Optical depth as a function of height and wavelength – one panel per spectral line
+    height_km = atmosphere.zgrid / 1e5
+    for iat, atom in enumerate(atoms):
+        for il, line in enumerate(atom.lines):
+            line_wl_nm = line.lambda0 * 1e7
+            wl_window  = 1.0  # nm
+            # Indices in the *original* (frequency-ordered) frequency grid
+            mask_nu = ((wavelength_grid_nm_final > line_wl_nm - wl_window) &
+                       (wavelength_grid_nm_final < line_wl_nm + wl_window))
+            if not np.any(mask_nu):
+                continue
+
+            wl_sel = np.flip(wavelength_grid_nm_final[mask_nu])
+            tau_sel = np.flip(tau_depth[:, mask_nu], axis=1)  # shape (Ndepth, Nsel)
+
+            plt.figure(figsize=(14, 5), dpi=100)
+            plt.pcolormesh(wl_sel, np.arange(len(height_km)),
+                               np.log10(np.maximum(tau_sel, 1e-10)),
+                               cmap='plasma', shading='auto')
+            plt.yticks(np.arange(0, len(height_km), 7), [f"{h:.0f}" for h in height_km[::7]])
+            plt.colorbar(label=r'$\log_{10}(\tau_\nu)$')
+            plt.xlabel("Wavelength (nm)")
+            plt.ylabel("Height (km)")
+            plt.title(f"Optical depth map — {atom.name} {line_wl_nm:.2f} nm")
+
+            plt.tight_layout()
+            plt.savefig(os.path.join(configuration["save_dir"],
+                                     f"optical_depth_{atom.name}_line{il}.png"))
+            # plt.show()
+            plt.close()
+
+    # Source function, Planck function, and Ratio diagnostics
+    for iat, atom in enumerate(atoms):
+        for il, line in enumerate(atom.lines):
+            line_wl_nm = line.lambda0 * 1e7
+            wl_window  = 1.0  # nm
+            # Indices in the *original* (frequency-ordered) frequency grid
+            mask_nu = ((wavelength_grid_nm_final > line_wl_nm - wl_window) &
+                       (wavelength_grid_nm_final < line_wl_nm + wl_window))
+            if not np.any(mask_nu):
+                continue
+
+            wl_sel = np.flip(wavelength_grid_nm_final[mask_nu])
+            S_sel = np.flip(source_func[:, mask_nu], axis=1)
+            B_sel = np.flip(plank_func[:, mask_nu], axis=1)
+            
+            # S/B ratio
+            ratio_sel = S_sel / np.maximum(B_sel, 1e-100)
+
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=100)
+            
+            # 1. Source Function Map
+            im1 = axes[0].pcolormesh(wl_sel, np.arange(len(height_km)),
+                                     np.log10(np.maximum(S_sel, 1e-100)),
+                                     cmap='plasma', shading='auto')
+            axes[0].set_yticks(np.arange(0, len(height_km), 7))
+            axes[0].set_yticklabels([f"{h:.0f}" for h in height_km[::7]])
+            axes[0].set_xlabel("Wavelength (nm)")
+            axes[0].set_ylabel("Height (km)")
+            axes[0].set_title(f"Source Function $\\log_{{10}}(S_\\nu)$")
+            fig.colorbar(im1, ax=axes[0], label=r'$\log_{10}(S_\nu)$')
+            vmin, vmax = im1.get_clim()
+
+            # 2. Planck Function Map
+            im2 = axes[1].pcolormesh(wl_sel, np.arange(len(height_km)),
+                                     np.log10(np.maximum(B_sel, 1e-100)),
+                                     cmap='plasma', shading='auto',
+                                     vmin=vmin, vmax=vmax)
+            axes[1].set_yticks(np.arange(0, len(height_km), 7))
+            axes[1].set_yticklabels([f"{h:.0f}" for h in height_km[::7]])
+            axes[1].set_xlabel("Wavelength (nm)")
+            axes[1].set_ylabel("Height (km)")
+            axes[1].set_title(f"Planck Function $\\log_{{10}}(B_\\nu)$")
+            fig.colorbar(im2, ax=axes[1], label=r'$\log_{10}(B_\nu)$')
+
+            # 3. Ratio S/B Map
+            im3 = axes[2].pcolormesh(wl_sel, np.arange(len(height_km)),
+                                     ratio_sel,
+                                     cmap='coolwarm', shading='auto', vmin=0, vmax=2)
+            axes[2].set_yticks(np.arange(0, len(height_km), 7))
+            axes[2].set_yticklabels([f"{h:.0f}" for h in height_km[::7]])
+            axes[2].set_xlabel("Wavelength (nm)")
+            axes[2].set_ylabel("Height (km)")
+            axes[2].set_title(f"Ratio $S_\\nu / B_\\nu$")
+            fig.colorbar(im3, ax=axes[2], label=r'$S_\nu / B_\nu$')
+
+            plt.suptitle(f"S/B Diagnostics — {atom.name} {line_wl_nm:.2f} nm", fontsize=14)
+            plt.tight_layout()
+            plt.savefig(os.path.join(configuration["save_dir"],
+                                     f"SB_diagnostics_{atom.name}_line{il}.png"))
+            # plt.show()
             plt.close()
 
     # Final converged population profiles vs height
