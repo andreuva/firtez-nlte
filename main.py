@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
-from atoms import MultiLevelAtom, create_frequency_grid
+from atoms import MultiLevelAtom, create_frequency_grid, solve_SEE
 from formal_solver import plank, voigt, formal_solution, get_RT_coefficients
 
 config_file = 'config_lw.json'
@@ -60,6 +60,10 @@ frequency_grid, weigths_freq_grid = create_frequency_grid(atoms,
                                                         #   max_resol_nm=configuration["max_wavelength_resolution_nm"],
                                                         #   min_resol_nm=configuration["min_wavelength_resolution_nm"]
                                                           )
+
+atmosphere.J_nu = np.zeros((atmosphere.Ndepth, len(frequency_grid)))
+for iz, TT in enumerate(atmosphere.temp):
+    atmosphere.J_nu[iz, :] = plank(frequency_grid, TT)
 
 # Pre-calculate h*nu for the grid
 hnu_grid = h_CGS * frequency_grid
@@ -174,6 +178,8 @@ for itteration in range(configuration["max_itterations"]):
         atom.Lambda_star_bar = np.zeros((atmosphere.Ndepth, len(atom.lines))) # NEW
         atom.photoionization_rates = np.zeros((atmosphere.Ndepth, len(atom.continua)))
         atom.recombination_rates = np.zeros((atmosphere.Ndepth, len(atom.continua)))
+    
+    J_grid = np.zeros((atmosphere.Ndepth, len(frequency_grid)))
 
     for ir, ray in tqdm(enumerate(rays), total=len(rays), leave=False, desc="solving the RT to integrate Js"):
 
@@ -187,26 +193,29 @@ for itteration in range(configuration["max_itterations"]):
             iz_start, iz_end, step = atmosphere.Ndepth-1, -1, -1
             I_o = np.zeros_like(frequency_grid)
         
-        emis_O, abs_O = get_RT_coefficients(iz_start, frequency_grid, weigths_freq_grid, atoms, atmosphere)
-        
         # Solve RT along the ray to integrate Js and other quantities.
-        for iz in range(iz_start + step, iz_end, step):
+        for iz in range(iz_start, iz_end, step):
 
-            # compute the geometrical path length dz for the current step (not necesarily constant)
-            if downward_ray:
-                dz = atmosphere.zgrid[iz - step] - atmosphere.zgrid[iz]
+            if iz == iz_start:
+                # Boundary point: I_o is already set. Just get local RT coeffs for the integrals.
+                emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+                # Boundary intensity is prescribed, so it doesn't depend on local source function
+                Lambda_star_mu = np.zeros_like(frequency_grid) 
             else:
-                dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
+                # Inner points: Propagate the formal solution as normal
+                if downward_ray:
+                    dz = atmosphere.zgrid[iz - step] - atmosphere.zgrid[iz]
+                else:
+                    dz = atmosphere.zgrid[iz] - atmosphere.zgrid[iz - step]
 
-            # move the O point to M
-            I_m = I_o.copy()
-            emis_M, abs_M = emis_O.copy(), abs_O.copy()
+                # move the O point to M
+                I_m = I_o.copy()
+                emis_M, abs_M = emis_O.copy(), abs_O.copy()
 
-            # compute the RT coeffs. in O
-            emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
-            # Compute the outgoing intentensity at point O, and the MALI contribution Lambda_star_mu at point O.
-            I_o, _ = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
+                emis_O, abs_O = get_RT_coefficients(iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+                I_o, Lambda_star_mu = formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O)
 
+            # --- Now the integration applies to ALL points, including the boundary ---
             h_atom = next((a for a in atoms if a.name == "H"), None)
             # True ground state hydrogen mapping. Falls back to background total H if not existing in config.
             nHGround = h_atom.populations[iz, 0] if h_atom else atmosphere.nh[iz]
@@ -240,43 +249,165 @@ for itteration in range(configuration["max_itterations"]):
 
                     a_damp = total_damping / (4 * np.pi * atom.doppler_widths[iz, il])
                     voigt_line = voigt(dop_freq, a_damp).real
+
+                    # Truncate/zero the profile outside the line's own physical grid boundary
+                    mask = np.abs(frequency_grid - line.nu0) <= line.max_delta_nu
+                    voigt_line[~mask] = 0.0
+
                     voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
 
-                    # Sum the intensity over the wavelength
-                    atom.Js[iz, il] += np.sum(weigths[ir]*weigths_freq_grid*I_o*voigt_norm)
-                    # # Integrate the Lambda operator
-                    # atom.Lambda_star_bar[iz, il] += np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)
+                    # # --- Calculate line opacity and ratio for lambda_star ---
+                    nu_pop = atom.populations[iz, line.upper_level_index]
+                    nl_pop = atom.populations[iz, line.lower_level_index]
 
-                # go through all the continua of the atom
-                # compute the photoionization and recombination rates
-                # this will then be used to compute the bound-free Radiative rates for the SEE.
-                for i_cont, cont in enumerate(atom.continua):
-                    alphas = atom.photoionization_alphas[i_cont, :]
-                    
-                    # Restrict to non-zero continuum wavelengths
-                    active_idx = alphas > 0
-                    if not np.any(active_idx):
-                        continue
-                        
-                    # Integration: alpha_v / h_v * I_v * d_v * dOmega
-                    integrand_ik = (alphas[active_idx] / hnu_grid[active_idx]) * I_o[active_idx]
-                    
-                    stim_spont_term = (2.0 * hnu3_grid[active_idx] / c_CGS**2 + I_o[active_idx]) \
-                                    * np.exp(-hnu_grid[active_idx] / (kB_CGS * atmosphere.temp[iz]))
-                    integrand_ki = (alphas[active_idx] / hnu_grid[active_idx]) * atom.lte_ratios_photoionization[iz, i_cont] \
-                                   * stim_spont_term
-                    
-                    # Rates scaled by radiation Solid angle integral equivalences (2*pi for 1D) 
-                    R_ik = 2.0 * np.pi * np.sum(weigths[ir] * weigths_freq_grid[active_idx] * integrand_ik)
-                    R_ki = 2.0 * np.pi * np.sum(weigths[ir] * weigths_freq_grid[active_idx] * integrand_ki)
-                    
-                    atom.photoionization_rates[iz, i_cont] += R_ik
-                    atom.recombination_rates[iz, i_cont] += R_ki
+                    abs_line = h_CGS * line.nu0 / (4 * np.pi) * (nl_pop * line.Blu - nu_pop * line.Bul) * voigt_norm
+                    opacity_ratio = np.zeros_like(abs_O)
+                    valid_abs = abs_O > 1e-100
+                    opacity_ratio[valid_abs] = abs_line[valid_abs] / abs_O[valid_abs]
+                    # opacity_ratio = np.clip(opacity_ratio, 0.0, 10.0)
 
+                    # --- Integrate the J and the lambda_star ---
+                    atom.Js[iz, il] += 0.5 * np.sum(weigths[ir]*weigths_freq_grid*I_o*voigt_norm)
+                    # Integrate the Lambda operator
+                    atom.Lambda_star_bar[iz, il] += 0.5 * np.sum(weigths[ir] * weigths_freq_grid * Lambda_star_mu * opacity_ratio * voigt_norm)
 
-    max_relative_change = 0.0 #solve_SEE(atoms, atmosphere)
+            J_grid[iz, :] += 0.5 * weigths[ir] * I_o
+
+        if ray == np.max(rays):
+            emergent_I_vertical = I_o.copy()
+    
+    atmosphere.J_nu = J_grid
+
+    # Calculate Photoionization/Recombination rates OUTSIDE the ray loop
+    for iz in range(atmosphere.Ndepth):
+        for atom in atoms:
+            for i_cont, cont in enumerate(atom.continua):
+                alphas = atom.photoionization_alphas[i_cont, :]
+                active_idx = alphas > 0
+                if not np.any(active_idx): continue
+                
+                # Spontaneous + Stimulated (using mean intensity)
+                stim_spont_term = (2.0 * hnu3_grid[active_idx] / c_CGS**2 + J_grid[iz, active_idx]) \
+                                * np.exp(-hnu_grid[active_idx] / (kB_CGS * atmosphere.temp[iz]))
+                                
+                integrand_ki = (alphas[active_idx] / hnu_grid[active_idx]) * atom.lte_ratios_photoionization[iz, i_cont] \
+                               * stim_spont_term
+                integrand_ik = (alphas[active_idx] / hnu_grid[active_idx]) * J_grid[iz, active_idx]
+
+                R_ik = 4.0 * np.pi * np.sum(weigths_freq_grid[active_idx] * integrand_ik)
+                R_ki = 4.0 * np.pi * np.sum(weigths_freq_grid[active_idx] * integrand_ki)
+                
+                atom.photoionization_rates[iz, i_cont] = R_ik
+                atom.recombination_rates[iz, i_cont] = R_ki
+
+    max_relative_change = solve_SEE(atoms, atmosphere)
     print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
+    for atom in atoms:
+        print(f"  {atom.name} max Lambda_star_bar: {np.max(atom.Lambda_star_bar)}")
     print("-"*50 + "\n")
+
+    # =========================================================================
+    # ITERATION-BY-ITERATION DEBUG PLOTS
+    # =========================================================================
+    if configuration.get("save_dir", False):
+        wavelength_nm_plot = (c_CGS / frequency_grid) * 1e7
+
+        # 1. Population Plot (NLTE vs LTE)
+        for atom in atoms:
+            plt.figure(figsize=(10, 6), dpi=100)
+            for i in range(atom.populations.shape[-1]):
+                plt.plot(atmosphere.zgrid / 1e5, atom.populations[:, i], '-', color=f'C{i}',
+                         label=f"NLTE Level {i}")
+                plt.plot(atmosphere.zgrid / 1e5, atom.lte_populations[:, i], 'o', color=f'C{i}',
+                         alpha=0.4, label=f"LTE Level {i}")
+            plt.xlabel("Height (km)")
+            plt.ylabel("Population (cm$^{-3}$)")
+            plt.yscale("log")
+            plt.title(f"Iteration {itteration+1} populations — {atom.name}")
+            plt.legend(fontsize=7, loc='upper center', bbox_to_anchor=(0.5, 1.12), ncol=4)
+            plt.tight_layout()
+            plt.savefig(os.path.join(configuration["save_dir"], f"debug_populations_{atom.name}_iter_{itteration+1}.png"))
+            plt.close()
+
+        # 2. Line Profile (Emergent Intensity for the most vertical ray)
+        if 'emergent_I_vertical' in locals():
+            for atom in atoms:
+                for il, line in enumerate(atom.lines):
+                    line_wl_nm = line.lambda0 * 1e7
+                    wl_window = 1.0  # nm
+                    mask_wl = (wavelength_nm_plot > line_wl_nm - wl_window) & (wavelength_nm_plot < line_wl_nm + wl_window)
+                    if not np.any(mask_wl): continue
+                    
+                    plt.figure(figsize=(8, 5), dpi=100)
+                    plt.plot(wavelength_nm_plot[mask_wl], emergent_I_vertical[mask_wl], 'k-', linewidth=1.5)
+                    plt.axvline(line_wl_nm, color='red', linestyle=':', alpha=0.5, label=f"Line Center: {line_wl_nm:.2f} nm")
+                    plt.xlabel("Wavelength (nm)")
+                    plt.ylabel("Intensity (erg s$^{-1}$ cm$^{-2}$ Hz$^{-1}$ sr$^{-1}$)")
+                    plt.title(f"Emergent Line Profile (most vertical ray) — Iter {itteration+1} — {atom.name} {line_wl_nm:.2f} nm")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(configuration["save_dir"], f"debug_profile_{atom.name}_line{il}_iter_{itteration+1}.png"))
+                    plt.close()
+
+        # 3. Radiation Field J vs B comparison at key depths
+        depth_indices = [0, atmosphere.Ndepth // 2, atmosphere.Ndepth - 1]
+        depth_labels = ["Photosphere (Bottom)", "Mid-Chromosphere", "Top of Atmosphere"]
+        
+        for atom in atoms:
+            for il, line in enumerate(atom.lines):
+                line_wl_nm = line.lambda0 * 1e7
+                wl_window = 1.0  # nm
+                mask_wl = (wavelength_nm_plot > line_wl_nm - wl_window) & (wavelength_nm_plot < line_wl_nm + wl_window)
+                if not np.any(mask_wl): continue
+                
+                fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=100)
+                for idx, iz_plot in enumerate(depth_indices):
+                    ax = axes[idx]
+                    B_vals = plank(frequency_grid[mask_wl], atmosphere.temp[iz_plot])
+                    J_vals = J_grid[iz_plot, mask_wl]
+                    
+                    ax.plot(wavelength_nm_plot[mask_wl], J_vals, 'b-', label=r'$J_\nu$ (Mean Radiation)')
+                    ax.plot(wavelength_nm_plot[mask_wl], B_vals, 'r--', label=r'$B_\nu$ (Planck Function)')
+                    ax.set_xlabel("Wavelength (nm)")
+                    ax.set_ylabel("Intensity")
+                    ax.set_title(f"{depth_labels[idx]} (H={atmosphere.zgrid[iz_plot]/1e5:.0f} km)")
+                    ax.legend(fontsize=8)
+                plt.suptitle(f"J vs B — Iteration {itteration+1} — {atom.name} {line_wl_nm:.2f} nm", fontsize=14)
+                plt.tight_layout()
+                plt.savefig(os.path.join(configuration["save_dir"], f"debug_J_vs_B_{atom.name}_line{il}_iter_{itteration+1}.png"))
+                plt.close()
+
+        # 4. Statistical Equilibrium Rates Plot (C vs R) vs Height
+        for atom in atoms:
+            if not hasattr(atom, 'R_matrix_all'): continue
+            Nlevel = len(atom.levels)
+            for il, line in enumerate(atom.lines):
+                i = line.lower_level_index
+                j = line.upper_level_index
+                
+                plt.figure(figsize=(10, 6), dpi=100)
+                n_i = atom.populations[:, i]
+                n_j = atom.populations[:, j]
+                
+                rate_R_up = np.maximum(n_i * atom.R_matrix_all[:, i, j], 1e-30)
+                rate_R_down = np.maximum(n_j * atom.R_matrix_all[:, j, i], 1e-30)
+                rate_C_up = np.maximum(n_i * atom.C_matrix_all[:, i, j], 1e-30)
+                rate_C_down = np.maximum(n_j * atom.C_matrix_all[:, j, i], 1e-30)
+                
+                plt.plot(atmosphere.zgrid / 1e5, rate_R_up, 'b-', label=f"Radiative Up ($n_{i} \\times R_{{ij}}$)")
+                plt.plot(atmosphere.zgrid / 1e5, rate_R_down, 'b--', label=f"Radiative Down ($n_{j} \\times R_{{ji}}$)")
+                plt.plot(atmosphere.zgrid / 1e5, rate_C_up, 'r-', label=f"Collisional Up ($n_{i} \\times C_{{ij}}$)")
+                plt.plot(atmosphere.zgrid / 1e5, rate_C_down, 'r--', label=f"Collisional Down ($n_{j} \\times C_{{ji}}$)")
+                
+                plt.xlabel("Height (km)")
+                plt.ylabel("Transition Rate (cm$^{-3}$ s$^{-1}$)")
+                plt.yscale("log")
+                plt.title(f"SEE Transition Rates (Level {i} <-> {j}) — Iter {itteration+1} — {atom.name}")
+                plt.legend(fontsize=8)
+                plt.tight_layout()
+                plt.savefig(os.path.join(configuration["save_dir"], f"debug_rates_{atom.name}_trans_{i}_{j}_iter_{itteration+1}.png"))
+                plt.close()
+
     if max_relative_change < configuration["max_tolerance"]:
         print("NLTE converged!")
         break

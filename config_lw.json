@@ -3,12 +3,12 @@
   "save_dir": "outputs_debug",
   "new_dir": true,
   "quadrature": {
-    "n_gaus": 8
+    "n_gaus": 4
   },
   "max_wavelength_resolution_nm": 0.0005,
   "min_wavelength_resolution_nm": 25,
   "max_itterations": 200,
-  "max_tolerance": 0.0001,
+  "max_tolerance": 0.01,
   "atoms": [
     {
       "name": "H",

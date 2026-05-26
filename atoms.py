@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Any, TYPE_CHECKING
 import numpy as np
 from constants import *
+from debug_functions import print_eq_system
 
 if TYPE_CHECKING:
     from atmosphere import Atmosphere
@@ -405,8 +406,11 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
             doppler_width_lambda = line.lambda0 * (v_micro_char / c_CGS)
             
             # The grid is built symmetric in *wavelength* space, not frequency!
-            for lam in (line.lambda0 + x_grid * doppler_width_lambda):
-                frequency_set.add(c_CGS / lam)
+            local_lambdas = line.lambda0 + x_grid * doppler_width_lambda
+            local_nus = c_CGS / local_lambdas
+            for nu in local_nus:
+                frequency_set.add(nu)
+            line.max_delta_nu = np.max(np.abs(local_nus - line.nu0))
 
     # reference 500 nm point
     frequency_set.add(c_CGS / (500.0 * 1e-7))
@@ -457,3 +461,290 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
     weights[1:-1] = 0.5 * (nus[2:] - nus[:-2])
 
     return nus, weights
+
+
+def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
+              max_itterations=100, tolerance=1e-5) -> float:
+    """
+    Solves the coupled Statistical Equilibrium and Charge/Particle
+    Conservation equations using a decoupled iterative Lambda method.
+
+    This function iterates at each depth point:
+    1. Solves SE for each atom using the current electron density (ne).
+    2. Calculates a new 'ne' based on the new populations.
+    3. Repeats until 'ne' converges locally.
+
+    Args:
+        atoms: A list of MultiLevelAtom objects.
+        atmosphere: The Atmosphere object containing T, P, ne, nh...
+
+    Returns:
+        The maximum relative change in the state vector (populations + ne)
+        from the *start* of the call.
+    """
+
+    # Store old state for final convergence check
+    old_ne = atmosphere.ne.copy()
+    old_pops = {atom.name: atom.populations.copy() for atom in atoms}
+
+    # --- Main Loop over All Depth Points ---
+    for k in range(atmosphere.Ndepth):
+        Tk = atmosphere.temp[k]
+        kT = kB_CGS * Tk
+        nh = atmosphere.nh[k]
+        ne_current_iter = atmosphere.ne[k]
+        
+        if Tk <= 2000 or nh <= 0:
+            # Skip this depth, old populations/ne will be preserved
+            print(f"Skipping depth k={k} (z={atmosphere.zgrid[k]/1e5}km) due to low T or non-positive n_H.")
+            continue
+            
+        if ne_current_iter <= 0:
+            print(f"Warning: Initial ne at depth k={k} is non-positive. Setting to a small positive value for iteration.")
+            ne_current_iter = 1e-20
+
+        # Compute initial charge from modelled atoms (before solving SE)
+        lte_total_charge = 0.0
+
+        # Save the populations from the outer ALI iteration for S_old computation.
+        # These must NOT be overwritten during the local ne-iterations.
+        old_pops_for_S = {}
+        for atom in atoms:
+            charges_arr = np.array([l.ionization for l in atom.levels])
+            lte_total_charge += np.sum(atom.lte_populations[k, :] * charges_arr)
+            old_pops_for_S[atom.name] = atom.populations[k, :].copy()
+
+        # --- Local Iteration for (Populations <-> ne) ---
+        for local_iter in range(max_itterations):
+            
+            ne_for_rates = ne_current_iter.copy()
+            new_total_charge = 0.0
+            
+            # --- Solve all atom populations with fixed ne ---
+            for atom in atoms:
+                N_total_k = atom.abundance * nh
+                if N_total_k <= 0:
+                    print(f"Warning: Atom {atom.name} has non-positive abundance at depth k={k}. Skipping SE solve for this atom.")
+                    continue
+                    
+                # Solve for this atom at this depth, using old_pops for S_old
+                populations_new = solve_atom(atom, k, Tk, ne_for_rates, kT, N_total_k, nh,
+                                             old_pops_k=old_pops_for_S[atom.name])
+                
+                # Update atom's population *at this depth*
+                atom.populations[k, :] = populations_new
+                
+                # --- Calculate contribution to charge ---
+                charges = np.array([l.ionization for l in atom.levels])
+                new_total_charge += np.sum(populations_new * charges)
+
+            # --- Calculate new ne and check convergence ---
+            # Update ne self-consistently from the NLTE populations.
+            # The delta-charge correction finds the total change in ionization
+            # relative to the LTE background state and adds it on top.
+            delta_charge_total = new_total_charge - lte_total_charge
+            ne_target = atmosphere.ne_bg[k] + delta_charge_total
+
+            # FIX: Prevent catastrophic cancellation from wiping out trace metal electrons.
+            # Metals (Fe, Si, Mg) ensure ne never drops below ~1e-6 of the total Hydrogen density.
+            min_metal_ne = 1e-6 * nh
+            if ne_target < min_metal_ne:
+                # If delta_charge wipes out ne, trust the metal floor or a fraction of the background
+                ne_target = max(min_metal_ne, atmosphere.ne_bg[k] * 0.01)
+            
+            # # Target ne is the baseline + the total change in modeled charge
+            # ne_target = atmosphere.ne_bg[k] + delta_charge_total
+            # if ne_target <= 1e-20: ne_target = 1e-20
+            
+            # Apply half-step damping to prevent oscillations
+            ne_new = 0.5 * (ne_current_iter + ne_target)
+            
+            rel_change_ne = np.abs(ne_new - ne_current_iter) / max(ne_current_iter, 1e-20)
+            ne_current_iter = ne_new
+            
+            if rel_change_ne < tolerance:
+                break # Local convergence reached
+
+        # Update the atmosphere's 'ne' with the converged value
+        atmosphere.ne[k] = ne_current_iter
+        
+        if local_iter == max_itterations - 1:
+            print(f"Warning: SE local iteration did not converge at depth k={k}")
+
+    # --- Calculate max *global* relative change ---
+    # (change from the start of the *entire* solve_SEE call)
+    # Get max change in ne
+    avg_ne = 0.5 * (old_ne + atmosphere.ne)
+    avg_ne[avg_ne < 1e-20] = 1e-20
+    rel_change_ne_vec = np.abs(old_ne - atmosphere.ne) / avg_ne
+    max_rel_change = np.max(rel_change_ne_vec)
+    
+    # Get max change in all populations
+    for atom in atoms:
+        old_p = old_pops[atom.name]
+        new_p = atom.populations
+        avg_p = 0.5 * (old_p + new_p)
+        avg_p[avg_p < 1e-20] = 1e-20
+        
+        rel_change_p_vec = np.abs(old_p - new_p) / avg_p
+        rel_change_p = np.max(rel_change_p_vec)
+        
+        if rel_change_p > max_rel_change:
+            max_rel_change = rel_change_p
+            
+    return max_rel_change
+
+# --- Internal helper function to solve SE for one atom at one depth ---
+def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
+                N_total_k: float, nh: float, old_pops_k: np.ndarray = None) -> np.ndarray:
+    """
+    Solves A*n = b for a single atom at depth k using fixed ne.
+    """
+    Nlevel = len(atom.levels)
+    energies = np.array([l.energy for l in atom.levels])
+    gs = np.array([l.g for l in atom.levels])
+    ionizations = np.array([l.ionization for l in atom.levels])
+
+    A_matrix = np.zeros((Nlevel, Nlevel))
+    B_vector = np.zeros(Nlevel) 
+    R_matrix = np.zeros((Nlevel, Nlevel))
+    C_matrix = np.zeros((Nlevel, Nlevel))
+
+    # --- Collisional Rates ---
+    for coll in atom.collisions:
+        # Ensure i is the lower level, j is the upper level
+        i, j = coll.lower_level_index, coll.upper_level_index
+        if energies[i] > energies[j]:
+            print(f"Warning, incorrent collisional level order in config file. Atom {atom.name}"\
+                    f" C_{i}{j} changed to C_{j}{i}.")
+            i, j = j, i
+        
+        dE = energies[j] - energies[i]
+        exp_factor = np.exp(-dE / kT) 
+        
+        C_rate_coeff = np.interp(Tk, coll.temperatures, coll.rates)
+        if C_rate_coeff < 0.0:
+            print(f"Warning, negative interpolated collision rate for atom {atom.name}"+\
+                    f" C_{i}{j} set to 0.0.")
+            C_rate_coeff = 0.0
+        
+        Cij, Cji = 0.0, 0.0
+        
+        if coll.type == "Omega":
+            # Dimensionless effective collision strength
+            C0 = 8.629130462809868e-06 # (ERydberg_CGS / np.sqrt(m_e_CGS) * np.pi * a0_cgs**2 * np.sqrt(8.0 / (np.pi * kB_CGS)))
+            Cji = C0 * ne * C_rate_coeff / (gs[j] * np.sqrt(Tk))
+            Cij = Cji * (gs[j] / gs[i]) * exp_factor
+            
+        elif coll.type == "CE":
+            # Collisional excitation by electrons
+            Cji = C_rate_coeff * ne * (gs[i] / gs[j]) * np.sqrt(Tk) * 1e6
+            Cij = Cji * (gs[j] / gs[i]) * exp_factor
+            
+        elif coll.type == "CI":
+            # Collisional ionization by electrons
+            Cij = C_rate_coeff * ne * np.exp(-dE / kT) * np.sqrt(Tk) * 1e6
+            lte_ratio = atom.lte_populations[k, i] / np.maximum(atom.lte_populations[k, j], 1e-100)
+            Cji = Cij * lte_ratio
+            
+        elif coll.type == "CH":
+            # Collisions with neutral hydrogen
+            Cij = C_rate_coeff * nh
+            if ionizations[i] == ionizations[j]:
+                Cji = Cij * (gs[i] / gs[j]) * np.exp(dE / kT)
+            else:
+                lte_ratio = atom.lte_populations[k, i] / np.maximum(atom.lte_populations[k, j], 1e-100)
+                Cji = Cij * lte_ratio
+                
+        elif coll.type == "CP":
+            # Collisions with protons
+            Cji = C_rate_coeff * nh
+            Cij = Cji * (gs[j] / gs[i]) * exp_factor
+        else:
+            print(f"WARNING: Unknown collision type '{coll.type}' in atom {atom.name}. Skipping this collision.")
+            continue
+            
+        C_matrix[i, j] += Cij
+        C_matrix[j, i] += Cji
+
+    # --- Radiative Rates (Bound-Bound) ---
+    for il, line in enumerate(atom.lines):
+        i, j = line.lower_level_index, line.upper_level_index
+        J_bar = atom.Js[k, il]
+
+        # R_matrix[i, j] += line.Blu * J_bar
+        # R_matrix[j, i] += line.Aul + line.Bul * J_bar
+        
+        # Fetch the new approximate operator, capping it to prevent numerical
+        # quadrature overshoot from causing negative transition rates.
+        L_star = np.clip(atom.Lambda_star_bar[k, il], 0.0, 0.9999999)
+
+        # Calculate the old Source Function using populations from the
+        # OUTER iteration (not the locally-updated ones)
+        n_l_old = old_pops_k[i]
+        n_u_old = old_pops_k[j]
+        
+        denom = n_l_old * line.Blu - n_u_old * line.Bul
+        if denom > 1e-100:
+            S_old = (n_u_old * line.Aul) / denom
+        else:
+            S_old = 0.0
+
+        # Calculate J_effective, ensuring it remains non-negative to preserve
+        # the M-matrix structure of the rate matrix.
+        J_eff = max(J_bar - L_star * S_old, 0.0)
+
+        # The preconditioned Rybicki-Hummer rates
+        R_matrix[i, j] += line.Blu * J_eff
+        R_matrix[j, i] += line.Aul * (1.0 - L_star) + line.Bul * J_eff
+
+    # --- (Bound-Free) ---
+    for i_cont, cont in enumerate(atom.continua):
+        i, j = cont.lower_level_index, cont.upper_level_index
+        R_matrix[i, j] += atom.photoionization_rates[k, i_cont]
+        R_matrix[j, i] += atom.recombination_rates[k, i_cont]
+
+    total_departure_rate_from_i = np.sum(R_matrix + C_matrix, axis=1)
+
+    for i in range(Nlevel):
+        for j in range(Nlevel):
+            A_matrix[i, j] = R_matrix[j, i] + C_matrix[j, i]
+        A_matrix[i, i] -= total_departure_rate_from_i[i]
+    
+    # Dynamically find the index of the most populated level.
+    max_pop_idx = np.argmax(old_pops_k)
+
+    # Overwrite the equation for the most populated level with the conservation equation.
+    # Scale the row by the typical departure rate of the most populated level to balance the matrix conditioning.
+    scale = total_departure_rate_from_i[max_pop_idx]
+    if scale <= 1e-100:
+        scale = 1.0
+    A_matrix[max_pop_idx, :] = scale
+    B_vector[max_pop_idx] = N_total_k * scale
+
+    # A_element_names = [f"{atom.name}_level_{i}" for i in range(Nlevel)]
+    # print(f"\n DEBUG: Rate matrix A for atom {atom.name} at depth k={k}")
+    # print_eq_system(A_matrix, B_vector, A_element_names)
+
+    # --- Solve the linear system A*n = b ---
+    try:
+        populations_new = np.linalg.solve(A_matrix, B_vector)
+        # Check for NaNs or Infs
+        if not np.all(np.isfinite(populations_new)):
+            raise ValueError("Linear solver returned non-finite values (NaN/Inf).")
+        populations_new[populations_new < 0] = 1e-100 # Clamp negatives
+    except (np.linalg.LinAlgError, ValueError) as e:
+        print(f"Error solving atom SE at depth k={k}: {e}")
+        if old_pops_k is not None:
+            populations_new = old_pops_k.copy()
+        else:
+            populations_new = atom.populations[k, :].copy()
+    
+    # Save the rate matrices for debugging
+    if not hasattr(atom, 'R_matrix_all') or atom.R_matrix_all.shape != (atom.populations.shape[0], Nlevel, Nlevel):
+        atom.R_matrix_all = np.zeros((atom.populations.shape[0], Nlevel, Nlevel))
+        atom.C_matrix_all = np.zeros((atom.populations.shape[0], Nlevel, Nlevel))
+    atom.R_matrix_all[k, :, :] = R_matrix
+    atom.C_matrix_all[k, :, :] = C_matrix
+
+    return populations_new

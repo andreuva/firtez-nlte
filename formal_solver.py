@@ -339,16 +339,21 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
                 else:
                     raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
-            a_damp = total_damping / (4 * np.pi * atom.doppler_widths[iz, il])
+            a_damp = total_damping / (4.0* np.pi * atom.doppler_widths[iz, il])
 
             voigt_line = voigt(dop_freq, a_damp).real
+
+            # Truncate outside the line's own physical grid boundary
+            mask = np.abs(freq_grid - line.nu0) <= line.max_delta_nu
+            voigt_line[~mask] = 0.0
+
             voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
 
             n_u = atom.populations[iz, line.upper_level_index]
             n_l = atom.populations[iz, line.lower_level_index]
 
-            emis += (h_CGS*freq_grid/(4*np.pi))* n_u * line.Aul * voigt_norm
-            abs +=  (h_CGS*freq_grid/(4*np.pi))* voigt_norm * (n_l*line.Blu - n_u*line.Bul)
+            emis += (h_CGS*line.nu0/(4*np.pi))* n_u * line.Aul * voigt_norm
+            abs +=  (h_CGS*line.nu0/(4*np.pi))* voigt_norm * (n_l*line.Blu - n_u*line.Bul)
 
         # Add the continuum contributions (Bound-Free)
         for ic, cont in enumerate(atom.continua):
@@ -414,7 +419,7 @@ def add_background_opacity(iz: int,
     n_He3 = sp['n_HeIII'][iz]
 
     kappa = np.zeros_like(freq_grid)
-    # kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2)
+    kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2)
     kappa += _opac_h_minus_wittmann(freq_grid, T, TKEV, ne, EHVKT, n_H1, n_Hm)
     kappa += _opac_h2plus(freq_grid, FREQLG, FREQ15, TKEV, STIM, n_H1, n_H2)
     kappa += _opac_he1(freq_grid, FREQLG, T, TLOG, TKEV, EHVKT, STIM, ne, n_He1, n_He2)
@@ -437,8 +442,11 @@ def add_background_opacity(iz: int,
     sigma += _opac_rayleigh_he(freq_grid, n_He1)
     sigma += _opac_rayleigh_h2(freq_grid, T, TLOG, TKEV, n_H1)
 
-    total  = kappa + sigma
-    return total * B, total
+    # total  = kappa + sigma
+    # return total * B, total
+    opp = kappa + sigma
+    ems = kappa*B + sigma*atmosphere.J_nu[iz, :]
+    return ems, opp
 
 
 # ===========================================================================
@@ -658,6 +666,15 @@ def add_background_opacity_old(iz: int,
 
     # B_nu and related terms
     B_nu = plank(freq_grid, atmosphere.temp[iz])
+
+    # Retrieve the true neutral Hydrogen population (NLTE if H is active, LTE background otherwise)
+    h_atom = next((a for a in atoms if a.name == "H"), None)
+    if h_atom is not None:
+        neutral_indices = [i for i, lvl in enumerate(h_atom.levels) if lvl.ionization == 0]
+        n_H_I = np.sum(h_atom.populations[iz, neutral_indices])
+    else:
+        n_H_I = atmosphere.bg_species['n_HI_per_U'][iz] * 2.0
+    
     n_H_I = atmosphere.nh[iz]
     
     if n_H_I > 0.0:
@@ -665,34 +682,34 @@ def add_background_opacity_old(iz: int,
         # Returns kappa_bf / n_H
         abs_h_bf_per_H_minus = opac_h_minus_bf_john1989(freq_grid, atmosphere.temp[iz], atmosphere.ne[iz])
         abs_h_bf = abs_h_bf_per_H_minus * n_H_I
-        emis_h_bf = abs_h_bf * B_nu # Assumes S_nu(H-) = B_nu
-        
-        emis_c += emis_h_bf
+        emis_c += abs_h_bf * B_nu
         abs_c += abs_h_bf
 
         # H- free-free (John 1989 fit)
         # Returns alpha_ff / n_H
         abs_h_ff_per_H_minus = opac_h_minus_ff_john1989(freq_grid, atmosphere.temp[iz], atmosphere.ne[iz])
         abs_h_ff = abs_h_ff_per_H_minus * n_H_I
-        emis__h_ff = abs_h_ff * B_nu # Assumes S_nu(H-) = B_nu
-        
-        emis_c += emis__h_ff
+        emis_c += abs_h_ff * B_nu
         abs_c += abs_h_ff
+        
+        # Neutral Hydrogen (Bound-Free & Bound-Bound)
+        abs_h_hydro_per_H = opac_hydrogen_landi_1976(freq_grid, atmosphere.temp[iz])
+        abs_h_hydro = abs_h_hydro_per_H * n_H_I
+        emis_c += abs_h_hydro * B_nu
+        abs_c += abs_h_hydro
+
+        # Rayleigh scattering (H I)
+        # Ported from cont_opacity.f90 (Dalgarno 1962 fit)
+        sigma_rayleigh = opac_rayleigh_h_dalgarno(freq_grid)
+        kappa_rayleigh = n_H_I * sigma_rayleigh
+        emis_c += kappa_rayleigh * atmosphere.J_nu[iz, :]
+        abs_c += kappa_rayleigh
     
     # --- Scattering (Thomson & Rayleigh) ---
     # Thomson scattering (electrons)
     kappa_thomson = atmosphere.ne[iz] * (8*np.pi/3)*((q_e_CGS/c_CGS)**4)/m_e_CGS**2
-    emis_c += kappa_thomson * B_nu #* J_nu
+    emis_c += kappa_thomson * atmosphere.J_nu[iz, :]
     abs_c += kappa_thomson
-    
-    # Rayleigh scattering (H I)
-    # Ported from cont_opacity.f90 (Dalgarno 1962 fit)
-    if n_H_I > 0.0:
-        sigma_rayleigh = opac_rayleigh_h_dalgarno(freq_grid)
-        kappa_rayleigh = n_H_I * sigma_rayleigh
-        
-        emis_c += kappa_rayleigh * B_nu #* J_nu
-        abs_c += kappa_rayleigh
 
     return emis_c, abs_c
 
@@ -739,6 +756,13 @@ def opac_h_minus_bf_john1989(freq: np.ndarray, T: float, n_e: float) -> np.ndarr
 
     if not np.any(lambda_mic < LAMBDAP):
         print("Warning: No wavelengths to compute H- bf opacity, set to 0.")
+    
+    # SAFEGUARD: The John (1989) polynomial fit diverges heavily in the EUV. 
+    # Clamp opacities below 1250 Å to zero to prevent matrix explosions.
+    opacity_per_HI[lambda_A < 1250.0] = 0.0
+    
+    # Absolute floor to guarantee no negative cross-sections are returned
+    opacity_per_HI = np.maximum(opacity_per_HI, 0.0)
     
     return opacity_per_HI
 
@@ -805,7 +829,12 @@ def opac_h_minus_ff_john1989(freq: np.ndarray, T: float, n_e: float) -> np.ndarr
     # if np.any(lambda_A < 1800.0):
         # raise ValueError("Wavelengths for H- opacities should be > 1800 Amstrongs")
 
-    opacity_per_HI[lambda_A < 1800.0] = 0.0 # From Fortran check
+    # SAFEGUARD: This perfectly replicates the Fortran line 20: 
+    # IF (LAMBDA0.LT.1800D0) THEN ... STOP
+    opacity_per_HI[lambda_A < 1800.0] = 0.0 
+    
+    # Absolute floor 
+    opacity_per_HI = np.maximum(opacity_per_HI, 0.0)
     
     return opacity_per_HI
 
@@ -824,6 +853,51 @@ def opac_rayleigh_h_dalgarno(freq: np.ndarray) -> np.ndarray:
 
     return sigma
 
+def opac_hydrogen_landi_1976(freq: np.ndarray, T: float) -> np.ndarray:
+    """
+    Port of OPAC_HYDROGEN from cont_opacity.f90 (Landi Degl'Innocenti 1976).
+    Calculates bound-free and bound-bound continuum opacity per neutral Hydrogen atom [cm^2].
+    Assumes partition function of 2 (valid for T < 12000 K).
+    """
+    lambda_A = (c_CGS / freq) * 1e8
+
+    # Constants directly from Fortran implementation to ensure an exact match
+    C1 = 1.09651067903121578e-03  # 1e-8 * 13.595 * eV / (h * c)
+    C2 = 1.04490915480325020e-26  # Pre-factor for Kramer's formula
+    C3 = 143886436.07434255       # (h * c) / (k * 1e-8)
+    C4 = 157773.01682218799       # 13.595 * eV / k
+
+    # Minimum principal quantum number that can be photoionized at this wavelength
+    n0 = 1 + np.floor(np.sqrt(C1 * lambda_A)).astype(int)
+    
+    sum_term = np.zeros_like(lambda_A)
+    
+    # ---------------------------------------------------------
+    # Branch 1: Wavelengths ionizing n0 <= 8
+    # ---------------------------------------------------------
+    mask_le8 = n0 <= 8
+    if np.any(mask_le8):
+        # Explicit sum from local n0 up to 8
+        for n in range(1, 9):
+            valid_n = (n >= n0) & mask_le8
+            sum_term[valid_n] += np.exp(C4 / (T * n**2)) * (n**-3)
+            
+        # Add high-N analytical approximation (n=9 to infinity)
+        sum_term[mask_le8] += (0.117 + np.exp(C4 / (T * 9.0**2))) * (T / (2.0 * C4))
+
+    # ---------------------------------------------------------
+    # Branch 2: Wavelengths ionizing n0 > 8
+    # ---------------------------------------------------------
+    mask_gt8 = ~mask_le8
+    if np.any(mask_gt8):
+        # Use only the high-N analytical approximation starting from n0
+        sum_term[mask_gt8] = (0.117 + np.exp(C4 / (T * n0[mask_gt8]**2))) * (T / (2.0 * C4))
+
+    # Final cross-section calculation
+    opac = C2 * sum_term * (1.0 - np.exp(-C3 / (T * lambda_A))) * np.exp(-C4 / T) * (lambda_A**3)
+    
+    return np.maximum(opac, 0.0)
+
 # --------------------------------------------------------------------------
 # Formal solution with linear Short Characteristics and MALI
 def formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O):
@@ -831,8 +905,11 @@ def formal_solution(ray, I_m, dz, emis_M, emis_O, abs_M, abs_O):
     delta_tauMO = 0.5*(abs_M + abs_O)*np.abs(dz/ray) + vacuum_CGS
     exp_tauMO = np.exp(-delta_tauMO)
 
-    S_m = emis_M / abs_M
-    S_o = emis_O / abs_O
+    # Guard against zero absorption (vacuum points) — use emis directly
+    # abs_M_safe = np.where(abs_M > vacuum_CGS, abs_M, vacuum_CGS)
+    # abs_O_safe = np.where(abs_O > vacuum_CGS, abs_O, vacuum_CGS)
+    S_m = emis_M / abs_M #_safe
+    S_o = emis_O / abs_O #_safe
 
     if np.any(S_m < 0) or np.any(S_o < 0):
         print("Warning: Negative source function encountered. Check emissivities and absorptions.")
