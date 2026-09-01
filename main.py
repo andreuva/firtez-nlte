@@ -8,9 +8,10 @@ from matplotlib import pyplot as plt
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid, solve_SEE
+from atoms import get_barklem_cross_section
 from formal_solver import plank, voigt, formal_solution, get_RT_coefficients
 
-config_file = 'config_lw.json'
+config_file = 'config_H_Ca_Mg_Na.json'
 # load the json configuration
 with open(config_file) as f:
     configuration = json.load(f)
@@ -98,6 +99,9 @@ for atom in atoms:
         line.stark_vrel_factor = 0.0
         line.stark_c23 = 0.0
         line.lin_stark_factor = 0.0
+        line.barklem_c0 = 0.0
+        line.barklem_c1 = 0.0
+        line.mult_stark_coeff = 0.0
         
         upper_lvl = atom.levels[line.upper_level_index]
         lower_lvl = atom.levels[line.lower_level_index]
@@ -124,7 +128,31 @@ for atom in atoms:
                 vRel35He = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_He_CGS))**0.3
                 
                 line.vdw_cross = 8.08 * (vals[0] * vRel35H + vals[1] * atmosphere.he_abund * vRel35He) * C625
+
+            elif elastic.get("type") == "VdwBarklem":
+                '''
+                Implementation of the Barklem method for van der Waals broadening.
+                '''
+                vals = elastic.get("vals", [0.0, 0.0])
+                barklemVals = get_barklem_cross_section(atom, line, vals)
+                line.barklem_c0 = barklemVals[0]
+                line.barklem_c1 = barklemVals[1]
                 
+                # Helium contribution (same Unsold cross section as in Lightweaver)
+                deltaR = (E_Ryd_erg / (E_cont - upper_lvl.energy))**2 - (E_Ryd_erg / (E_cont - lower_lvl.energy))**2
+                Z = 1 # stage + 1 = 0 + 1 = 1 for neutral atom in VdwBarklem
+                C6_CGS = 2.5 * q_e_CGS**2 * alpha_H_CGS * 2.0 * np.pi * (Z * a0_CGS)**2 / h_CGS * abs(deltaR)
+                C625 = C6_CGS**0.4
+                vRel35He = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_He_CGS))**0.3
+                
+                line.vdw_cross = 8.08 * atmosphere.he_abund * vRel35He * C625
+
+            elif elastic.get("type") == "MultiplicativeStarkBroadening":
+                '''
+                Simple expression for multiplicative Stark broadening, ne * coeff
+                '''
+                line.mult_stark_coeff = elastic.get("coeff", 0.0)
+
             elif elastic.get("type") == "QuadraticStarkBroadening":
                 '''
                 Lindholm theory result for Quadratic Stark broadening by electrons and
@@ -244,6 +272,10 @@ for itteration in range(configuration["max_itterations"]):
                             total_damping += line.stark_c23 * line.stark_vrel_factor * atmosphere.temp[iz]**(1.0/6.0) * atmosphere.ne[iz]
                         elif elastic.get("type") == "HydrogenLinearStarkBroadening":
                             total_damping += line.lin_stark_factor * atmosphere.ne[iz]**(2.0/3.0)
+                        elif elastic.get("type") == "VdwBarklem":
+                            total_damping += (line.barklem_c0 * atmosphere.temp[iz]**(0.5 * (1.0 - line.barklem_c1)) + line.vdw_cross * atmosphere.temp[iz]**0.3) * nHGround
+                        elif elastic.get("type") == "MultiplicativeStarkBroadening":
+                            total_damping += line.mult_stark_coeff * atmosphere.ne[iz]
                         else:
                             raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
@@ -251,6 +283,7 @@ for itteration in range(configuration["max_itterations"]):
                     voigt_line = voigt(dop_freq, a_damp).real
 
                     # Truncate/zero the profile outside the line's own physical grid boundary
+                    # TO CHECK: WHY THIS MATTERS SO MUCH IN THE SOLUTION?????
                     mask = np.abs(frequency_grid - line.nu0) <= line.max_delta_nu
                     voigt_line[~mask] = 0.0
 
@@ -414,6 +447,17 @@ for itteration in range(configuration["max_itterations"]):
 # #################################################################################
 
 # =============================================================================
+# DEPARTURE COEFFICIENTS  β_i = n_i(NLTE) / n_i(LTE)
+# =============================================================================
+for atom in atoms:
+    atom.departure_coefficients = atom.populations / np.maximum(atom.lte_populations, 1e-100)
+    print(f"{atom.name} departure coefficients (min/max per level):")
+    for i in range(atom.populations.shape[-1]):
+        print(f"  Level {i}: beta_min={atom.departure_coefficients[:, i].min():.4f}  "
+              f"beta_max={atom.departure_coefficients[:, i].max():.4f}")
+print()
+
+# =============================================================================
 # FINAL FORMAL SOLUTION — compute the emergent spectrum with converged populations
 # for a single vertical ray (μ = 1, θ = 0) and save all results.
 # =============================================================================
@@ -458,6 +502,8 @@ I_disk_centre = I_o
 # tau_depth[iz, :] == optical depth from the bottom up to layer iz.
 # The surface value tau_depth[-1, :] is the total optical depth of the whole atmosphere.
 tau_surface = np.log10(tau_depth[-1, :])
+# convert optical depth to a typical scale where 0 is the observer and max is the bottom of the atmosphere
+tau_depth_observed = tau_depth[-1, :][np.newaxis, :] - tau_depth
 wavelength_grid_nm_final = (c_CGS / frequency_grid) * 1e7  # cm to nm
 
 # ---- Save results to disk ----
@@ -474,7 +520,7 @@ if configuration.get("save_dir", False):
     # Save optical depth arrays from the vertical (μ=1) formal solution
     # tau_depth : shape (Ndepth, Nfreq)  – cumulative τ from bottom up to each layer
     # tau_surface: shape (Nfreq,)        – total column optical depth
-    np.save(os.path.join(configuration["save_dir"], "optical_depth_vs_depth_mu1.npy"), tau_depth)
+    np.save(os.path.join(configuration["save_dir"], "optical_depth_vs_depth_mu1.npy"), tau_depth_observed)
     np.save(os.path.join(configuration["save_dir"], "optical_depth_total_mu1.npy"),   tau_surface)
 
     # Save converged populations, LTE populations, and Js for each atom
@@ -482,6 +528,8 @@ if configuration.get("save_dir", False):
         np.save(os.path.join(configuration["save_dir"], f"populations_{atom.name}.npy"), atom.populations)
         np.save(os.path.join(configuration["save_dir"], f"lte_populations_{atom.name}.npy"), atom.lte_populations)
         np.save(os.path.join(configuration["save_dir"], f"Js_{atom.name}.npy"), atom.Js)
+        np.save(os.path.join(configuration["save_dir"], f"departure_coefficients_{atom.name}.npy"),
+                atom.departure_coefficients)
 
 if configuration.get("debug", False):
     # Disk-centre emergent spectrum (μ=1 ray)
@@ -546,7 +594,7 @@ if configuration.get("debug", False):
                 continue
 
             wl_sel = np.flip(wavelength_grid_nm_final[mask_nu])
-            tau_sel = np.flip(tau_depth[:, mask_nu], axis=1)  # shape (Ndepth, Nsel)
+            tau_sel = np.flip(tau_depth_observed[:, mask_nu], axis=1)  # shape (Ndepth, Nsel)
 
             plt.figure(figsize=(14, 5), dpi=100)
             plt.pcolormesh(wl_sel, np.arange(len(height_km)),
@@ -643,5 +691,25 @@ if configuration.get("debug", False):
         plt.tight_layout()
         plt.savefig(os.path.join(configuration["save_dir"], f"final_populations_{atom.name}.png"))
         plt.close()
+
+    # Departure coefficients β_i = n_NLTE / n_LTE  vs height
+    for iat, atom in enumerate(atoms):
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+        for i in range(atom.departure_coefficients.shape[-1]):
+            ax.plot(atmosphere.zgrid / 1e5,
+                    atom.departure_coefficients[:, i],
+                    '-', color=f'C{i}', label=f"Level {i}")
+        ax.axhline(1.0, color='k', linestyle='--', linewidth=1.0, alpha=0.6, label="LTE (β=1)")
+        ax.set_yscale("log")
+        ax.set_ylim(1e-2, 1e2)
+        ax.set_xlabel("Height (km)")
+        ax.set_ylabel(r"Departure coefficient $\beta_i = n_i^{\rm NLTE} / n_i^{\rm LTE}$")
+        ax.set_title(f"Departure Coefficients — {atom.name}")
+        ax.legend(fontsize=8, loc='upper center', bbox_to_anchor=(0.5, 1.12),
+                  ncol=min(atom.departure_coefficients.shape[-1] + 1, 6),
+                  edgecolor='none', framealpha=0.5)
+        fig.tight_layout()
+        fig.savefig(os.path.join(configuration["save_dir"], f"departure_coefficients_{atom.name}.png"))
+        plt.close(fig)
 
     print("Done! All results saved.")

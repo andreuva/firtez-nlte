@@ -1,17 +1,14 @@
 {
   "debug": "True",
-  "save_dir": "outputs_debug",
+  "save_dir": "outputs_H_Ca",
   "new_dir": true,
-
-  "quadrature": {"n_gaus": 8},
-
-  "max_wavelength_resolution_nm": 5e-4,
-  "min_wavelength_resolution_nm": 50,
-
+  "quadrature": {
+    "n_gaus": 5
+  },
+  "max_wavelength_resolution_nm": 0.0005,
+  "min_wavelength_resolution_nm": 25,
   "max_itterations": 200,
-  "max_tolerance": 1e-4,
-  
-
+  "max_tolerance": 0.01,
   "atoms": [
     {
       "name": "H",
@@ -19,162 +16,789 @@
       "mass": 1.008,
       "Z": 1,
       "levels": [
-        { "energy": 0.0, "g": 2.0, "label": "H I 1S 2SE", "ionization": 1, "J": 0.5, "L": 0, "S": 0.5 },
-        { "energy": 82258.211, "g": 8.0, "label": "H I 2P 2PO", "ionization": 1, "J": 1.5, "L": 1, "S": 0.5 },
-        { "energy": 97491.219, "g": 18.0, "label": "H I 3D 2DE", "ionization": 1, "J": 2.5, "L": 2, "S": 0.5 },
-        { "energy": 102822.766, "g": 32.0, "label": "H I 4F 2FO", "ionization": 1, "J": 3.5, "L": 3, "S": 0.5 },
-        { "energy": 105290.508, "g": 50.0, "label": "H I 5G 2GE", "ionization": 1, "J": 4.5, "L": 4, "S": 0.5 },
-        { "energy": 109677.617, "g": 1.0, "label": "H II continuum", "ionization": 2, "J": 0.0, "L": 0, "S": 0.0 }
+        {
+          "energy": 0.0,
+          "g": 2.0,
+          "label": "H I 1S 2SE",
+          "ionization": 0,
+          "J": 0.5,
+          "L": 0,
+          "S": 0.5
+        },
+        {
+          "energy": 82258.211,
+          "g": 8.0,
+          "label": "H I 2P 2PO",
+          "ionization": 0,
+          "J": 1.5,
+          "L": 1,
+          "S": 0.5
+        },
+        {
+          "energy": 97491.219,
+          "g": 18.0,
+          "label": "H I 3D 2DE",
+          "ionization": 0,
+          "J": 2.5,
+          "L": 2,
+          "S": 0.5
+        },
+        {
+          "energy": 102822.766,
+          "g": 32.0,
+          "label": "H I 4F 2FO",
+          "ionization": 0,
+          "J": 3.5,
+          "L": 3,
+          "S": 0.5
+        },
+        {
+          "energy": 105290.50800000002,
+          "g": 50.0,
+          "label": "H I 5G 2GE",
+          "ionization": 0,
+          "J": 4.5,
+          "L": 4,
+          "S": 0.5
+        },
+        {
+          "energy": 109677.617,
+          "g": 1.0,
+          "label": "H II continuum",
+          "ionization": 1,
+          "J": 0.0,
+          "L": 5,
+          "S": 0.5
+        }
       ],
       "lines": [
         {
-          "upper_level_index": 1, "lower_level_index": 0, "oscillator_strength": 0.4162, "type": "PRD",
-          "quadrature": { "N_lambda": 100, "q_core": 15.0, "q_wing": 600.0 },
+          "upper_level_index": 1,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.4162,
+          "type": "PRD",
+          "quadrature": {
+            "N_lambda": 100,
+            "q_core": 15.0,
+            "q_wing": 600.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 470000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 470000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 2, "lower_level_index": 0, "oscillator_strength": 0.0791, "type": "PRD",
-          "quadrature": { "N_lambda": 71, "q_core": 10.0, "q_wing": 250.0 },
+          "upper_level_index": 2,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.0791,
+          "type": "PRD",
+          "quadrature": {
+            "N_lambda": 71,
+            "q_core": 10.0,
+            "q_wing": 250.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 99800000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 99800000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 3, "lower_level_index": 0, "oscillator_strength": 0.02899, "type": "CRD",
-          "quadrature": { "N_lambda": 71, "q_core": 3.0, "q_wing": 100.0 },
+          "upper_level_index": 3,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.02899,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 71,
+            "q_core": 3.0,
+            "q_wing": 100.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 30200000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 30200000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 0, "oscillator_strength": 0.01394, "type": "CRD",
-          "quadrature": { "N_lambda": 20, "q_core": 3.0, "q_wing": 100.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.01394,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 20,
+            "q_core": 3.0,
+            "q_wing": 100.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 11500000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 11500000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 2, "lower_level_index": 1, "oscillator_strength": 0.6407, "type": "CRD",
-          "quadrature": { "N_lambda": 71, "q_core": 15.0, "q_wing": 350.0 },
+          "upper_level_index": 2,
+          "lower_level_index": 1,
+          "oscillator_strength": 0.6407,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 71,
+            "q_core": 15.0,
+            "q_wing": 350.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 99800000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 99800000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 3, "lower_level_index": 1, "oscillator_strength": 0.1193, "type": "CRD",
-          "quadrature": { "N_lambda": 71, "q_core": 15.0, "q_wing": 350.0 },
+          "upper_level_index": 3,
+          "lower_level_index": 1,
+          "oscillator_strength": 0.1193,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 71,
+            "q_core": 15.0,
+            "q_wing": 350.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 30200000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 30200000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 1, "oscillator_strength": 0.04467, "type": "CRD",
-          "quadrature": { "N_lambda": 40, "q_core": 15.0, "q_wing": 350.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 1,
+          "oscillator_strength": 0.04467,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 40,
+            "q_core": 15.0,
+            "q_wing": 350.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 11500000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 11500000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 3, "lower_level_index": 2, "oscillator_strength": 0.842, "type": "CRD",
-          "quadrature": { "N_lambda": 71, "q_core": 2.0, "q_wing": 30.0 },
+          "upper_level_index": 3,
+          "lower_level_index": 2,
+          "oscillator_strength": 0.842,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 71,
+            "q_core": 2.0,
+            "q_wing": 30.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 30200000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 30200000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 2, "oscillator_strength": 0.1506, "type": "CRD",
-          "quadrature": { "N_lambda": 20, "q_core": 2.0, "q_wing": 30.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 2,
+          "oscillator_strength": 0.1506,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 20,
+            "q_core": 2.0,
+            "q_wing": 30.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 11500000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 11500000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 3, "oscillator_strength": 1.036, "type": "CRD",
-          "quadrature": { "N_lambda": 20, "q_core": 1.0, "q_wing": 30.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 3,
+          "oscillator_strength": 1.036,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 20,
+            "q_core": 1.0,
+            "q_wing": 30.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 11500000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 11500000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.0, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 },
-              { "type": "HydrogenLinearStarkBroadening" }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.0,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              },
+              {
+                "type": "HydrogenLinearStarkBroadening"
+              }
             ]
           }
         }
       ],
       "continua": [
-        {"upper_level_index": 5, "lower_level_index": 0, "photoionization_cross_section": [[22.79, 1.34e-24], [26.43, 2.08e-24], [30.07, 3.16e-24], [33.70, 4.65e-24], [37.34, 6.64e-24], [40.98, 9.22e-24], [44.62, 1.25e-23], [48.25, 1.65e-23], [51.89, 2.15e-23], [55.53, 2.75e-23], [59.17, 3.47e-23], [62.81, 4.31e-23], [66.44, 5.30e-23], [70.08, 6.44e-23], [73.72, 7.76e-23], [77.36, 9.27e-23], [80.99, 1.10e-22], [84.63, 1.29e-22], [88.27, 1.51e-22], [91.18, 1.76e-22]]},
-        {"upper_level_index": 5, "lower_level_index": 1, "photoionization_cross_section": [[91.18, 1.56e-23], [105.51, 2.14e-23], [119.85, 2.90e-23], [134.19, 3.86e-23], [148.53, 5.06e-23], [162.87, 6.54e-23], [177.21, 8.32e-23], [191.54, 1.04e-22], [205.88, 1.29e-22], [220.22, 1.58e-22], [234.56, 1.91e-22], [248.90, 2.29e-22], [263.24, 2.73e-22], [277.57, 3.22e-22], [291.91, 3.78e-22], [306.25, 4.41e-22], [320.59, 5.10e-22], [334.93, 5.88e-22], [349.27, 6.74e-22], [364.70, 7.69e-22]]},
-        {"upper_level_index": 5, "lower_level_index": 2, "photoionization_cross_section": [[205.15, 6.94e-23], [237.28, 9.17e-23], [269.41, 1.20e-22], [301.55, 1.55e-22], [333.68, 1.98e-22], [365.81, 2.50e-22], [397.94, 3.12e-22], [430.07, 3.86e-22], [462.21, 4.72e-22], [494.34, 5.71e-22], [526.47, 6.86e-22], [558.60, 8.16e-22], [590.73, 9.64e-22], [622.87, 1.13e-21], [655.00, 1.32e-21], [687.13, 1.53e-21], [719.26, 1.76e-21], [751.40, 2.02e-21], [783.53, 2.31e-21], [820.57, 2.63e-21]]},
-        {"upper_level_index": 5, "lower_level_index": 3, "photoionization_cross_section": [[364.71, 1.83e-22], [421.49, 2.37e-22], [478.28, 3.03e-22], [535.07, 3.83e-22], [591.85, 4.80e-22], [648.64, 5.95e-22], [705.43, 7.30e-22], [762.22, 8.87e-22], [819.00, 1.07e-21], [875.79, 1.28e-21], [932.58, 1.51e-21], [989.37, 1.78e-21], [1046.15, 2.08e-21], [1102.94, 2.42e-21], [1159.73, 2.79e-21], [1216.52, 3.20e-21], [1273.30, 3.66e-21], [1330.09, 4.16e-21], [1386.88, 4.71e-21], [1458.70, 5.31e-21]]},
-        {"upper_level_index": 5, "lower_level_index": 4, "photoionization_cross_section": [[569.85, 4.09e-22], [659.83, 5.25e-22], [749.81, 6.66e-22], [839.79, 8.35e-22], [929.77, 1.04e-21], [1019.75, 1.28e-21], [1109.73, 1.56e-21], [1199.71, 1.89e-21], [1289.69, 2.27e-21], [1379.67, 2.70e-21], [1469.65, 3.19e-21], [1559.63, 3.75e-21], [1649.61, 4.37e-21], [1739.59, 5.07e-21], [1829.57, 5.84e-21], [1919.55, 6.70e-21], [2009.53, 7.65e-21], [2099.51, 8.70e-21], [2189.49, 9.85e-21], [2279.70, 1.11e-20]]}
+        {
+          "type": "HydrogenicContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 0,
+          "NlambdaGen": 20,
+          "alpha0": 6.152e-22,
+          "minWavelength": 22.794
+        },
+        {
+          "type": "HydrogenicContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 1,
+          "NlambdaGen": 20,
+          "alpha0": 1.379e-21,
+          "minWavelength": 91.176
+        },
+        {
+          "type": "HydrogenicContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 2,
+          "NlambdaGen": 20,
+          "alpha0": 2.149e-21,
+          "minWavelength": 205.147
+        },
+        {
+          "type": "HydrogenicContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 3,
+          "NlambdaGen": 20,
+          "alpha0": 2.923e-21,
+          "minWavelength": 364.705
+        },
+        {
+          "type": "HydrogenicContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 4,
+          "NlambdaGen": 20,
+          "alpha0": 3.699e-21,
+          "minWavelength": 569.852
+        }
       ],
       "collisions": [
-        {"type": "CE", "upper_level_index": 1, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [9.75e-16, 6.098e-16, 4.535e-16, 3.365e-16, 2.008e-16, 1.56e-16]},
-        {"type": "CE", "upper_level_index": 2, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [1.437e-16, 9.069e-17, 6.798e-17, 5.097e-17, 3.118e-17, 2.461e-17]},
-        {"type": "CE", "upper_level_index": 3, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [4.744e-17, 3.001e-17, 2.255e-17, 1.696e-17, 1.044e-17, 8.281e-18]},
-        {"type": "CE", "upper_level_index": 4, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [2.154e-17, 1.364e-17, 1.026e-17, 7.723e-18, 4.772e-18, 3.791e-18]},
-        {"type": "CE", "upper_level_index": 2, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [1.127e-14, 8.077e-15, 6.716e-15, 5.691e-15, 4.419e-15, 3.89e-15]},
-        {"type": "CE", "upper_level_index": 3, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [1.36e-15, 1.011e-15, 8.617e-16, 7.482e-16, 6.068e-16, 5.484e-16]},
-        {"type": "CE", "upper_level_index": 4, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [4.04e-16, 3.041e-16, 2.612e-16, 2.287e-16, 1.887e-16, 1.726e-16]},
-        {"type": "CE", "upper_level_index": 3, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [3.114e-14, 2.629e-14, 2.434e-14, 2.29e-14, 2.068e-14, 1.917e-14]},
-        {"type": "CE", "upper_level_index": 4, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [3.119e-15, 2.7e-15, 2.527e-15, 2.4e-15, 2.229e-15, 2.13e-15]},
-        {"type": "CE", "upper_level_index": 4, "lower_level_index": 3, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [7.728e-14, 7.317e-14, 7.199e-14, 7.109e-14, 6.752e-14, 6.31e-14]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [2.635e-17, 2.864e-17, 3.076e-17, 3.365e-17, 4.138e-17, 4.703e-17]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [5.34e-16, 6.596e-16, 7.546e-16, 8.583e-16, 1.025e-15, 1.069e-15]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [2.215e-15, 2.792e-15, 3.169e-15, 3.518e-15, 3.884e-15, 3.828e-15]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 3, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [6.182e-15, 7.576e-15, 8.37e-15, 8.992e-15, 9.252e-15, 8.752e-15]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 4, "temperatures": [3000.0, 5000.0, 7000.0, 10000.0, 20000.0, 30000.0], "rates": [1.342e-14, 1.588e-14, 1.71e-14, 1.786e-14, 1.743e-14, 1.601e-14]}
+        {
+          "type": "CE",
+          "upper_level_index": 1,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            9.75e-16,
+            6.098e-16,
+            4.535e-16,
+            3.365e-16,
+            2.008e-16,
+            1.56e-16
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 2,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            1.437e-16,
+            9.069e-17,
+            6.798e-17,
+            5.097e-17,
+            3.118e-17,
+            2.461e-17
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 3,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            4.744e-17,
+            3.001e-17,
+            2.255e-17,
+            1.696e-17,
+            1.044e-17,
+            8.281e-18
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 4,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            2.154e-17,
+            1.364e-17,
+            1.026e-17,
+            7.723e-18,
+            4.772e-18,
+            3.791e-18
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 2,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            1.127e-14,
+            8.077e-15,
+            6.716e-15,
+            5.691e-15,
+            4.419e-15,
+            3.89e-15
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 3,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            1.36e-15,
+            1.011e-15,
+            8.617e-16,
+            7.482e-16,
+            6.068e-16,
+            5.484e-16
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 4,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            4.04e-16,
+            3.041e-16,
+            2.612e-16,
+            2.287e-16,
+            1.887e-16,
+            1.726e-16
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 3,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            3.114e-14,
+            2.629e-14,
+            2.434e-14,
+            2.29e-14,
+            2.068e-14,
+            1.917e-14
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 4,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            3.119e-15,
+            2.7e-15,
+            2.527e-15,
+            2.4e-15,
+            2.229e-15,
+            2.13e-15
+          ]
+        },
+        {
+          "type": "CE",
+          "upper_level_index": 4,
+          "lower_level_index": 3,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            7.728e-14,
+            7.317e-14,
+            7.199e-14,
+            7.109e-14,
+            6.752e-14,
+            6.31e-14
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            2.635e-17,
+            2.864e-17,
+            3.076e-17,
+            3.365e-17,
+            4.138e-17,
+            4.703e-17
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            5.34e-16,
+            6.596e-16,
+            7.546e-16,
+            8.583e-16,
+            1.025e-15,
+            1.069e-15
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            2.215e-15,
+            2.792e-15,
+            3.169e-15,
+            3.518e-15,
+            3.884e-15,
+            3.828e-15
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 3,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            6.182e-15,
+            7.576e-15,
+            8.37e-15,
+            8.992e-15,
+            9.252e-15,
+            8.752e-15
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 4,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            10000.0,
+            20000.0,
+            30000.0
+          ],
+          "rates": [
+            1.342e-14,
+            1.588e-14,
+            1.71e-14,
+            1.786e-14,
+            1.743e-14,
+            1.601e-14
+          ]
+        }
       ],
       "irwin_coefficients": {
-        "1": [-2.61655891e2, 1.63428326e2, -4.06133526e1, 5.03282928e0, -3.10998364e-1, 7.66654594e-3],
-        "2": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        "0": [
+          -261.655891,
+          163.428326,
+          -40.6133526,
+          5.03282928,
+          -0.310998364,
+          0.00766654594
+        ],
+        "1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
       }
     },
     {
@@ -183,138 +807,1306 @@
       "mass": 40.078,
       "Z": 20,
       "levels": [
-        {"energy": 0.0, "g": 2.0, "label": "CA II 4S", "ionization": 2, "J": 0.5, "L": 0, "S": 0.5},
-        {"energy": 13650.19, "g": 4.0, "label": "CA II 3D 3/2", "ionization": 2, "J": 1.5, "L": 2, "S": 0.5},
-        {"energy": 13710.88, "g": 6.0, "label": "CA II 3D 5/2", "ionization": 2, "J": 2.5, "L": 2, "S": 0.5},
-        {"energy": 25191.51, "g": 2.0, "label": "CA II 4P 1/2", "ionization": 2, "J": 0.5, "L": 1, "S": 0.5},
-        {"energy": 25414.4, "g": 4.0, "label": "CA II 4P 3/2", "ionization": 2, "J": 1.5, "L": 1, "S": 0.5},
-        {"energy": 95785.47, "g": 1.0, "label": "CA III", "ionization": 3, "J": 0.0, "L": 0, "S": 0.0}
+        {
+          "energy": 0.0,
+          "g": 2.0,
+          "label": "CA II 4S",
+          "ionization": 1,
+          "J": 0.5,
+          "L": 0,
+          "S": 0.5
+        },
+        {
+          "energy": 13650.189999999999,
+          "g": 4.0,
+          "label": "CA II 3D 3/2",
+          "ionization": 1,
+          "J": 1.5,
+          "L": 2,
+          "S": 0.5
+        },
+        {
+          "energy": 13710.88,
+          "g": 6.0,
+          "label": "CA II 3D 5/2",
+          "ionization": 1,
+          "J": 2.5,
+          "L": 2,
+          "S": 0.5
+        },
+        {
+          "energy": 25191.51,
+          "g": 2.0,
+          "label": "CA II 4P 1/2",
+          "ionization": 1,
+          "J": 0.5,
+          "L": 1,
+          "S": 0.5
+        },
+        {
+          "energy": 25414.4,
+          "g": 4.0,
+          "label": "CA II 4P 3/2",
+          "ionization": 1,
+          "J": 1.5,
+          "L": 1,
+          "S": 0.5
+        },
+        {
+          "energy": 95785.47,
+          "g": 1.0,
+          "label": "CA III",
+          "ionization": 2,
+          "J": 0.0,
+          "L": 0,
+          "S": 0.0
+        }
       ],
       "lines": [
         {
-          "upper_level_index": 3, "lower_level_index": 0, "oscillator_strength": 0.3412, "type": "PRD",
-          "quadrature": { "N_lambda": 50, "q_core": 30.0, "q_wing": 1500.0 },
+          "upper_level_index": 3,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.3412,
+          "type": "PRD",
+          "quadrature": {
+            "N_lambda": 50,
+            "q_core": 30.0,
+            "q_wing": 1500.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 148000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 148000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.5, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.5,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 0, "oscillator_strength": 0.6807, "type": "PRD",
-          "quadrature": { "N_lambda": 50, "q_core": 30.0, "q_wing": 1500.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 0,
+          "oscillator_strength": 0.6807,
+          "type": "PRD",
+          "quadrature": {
+            "N_lambda": 50,
+            "q_core": 30.0,
+            "q_wing": 1500.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 150000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 150000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.5, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.5,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              }
             ]
           }
         },
         {
-          "upper_level_index": 3, "lower_level_index": 1, "oscillator_strength": 0.05956, "type": "CRD",
-          "quadrature": { "N_lambda": 40, "q_core": 4.0, "q_wing": 200.0 },
+          "upper_level_index": 3,
+          "lower_level_index": 1,
+          "oscillator_strength": 0.05956,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 40,
+            "q_core": 4.0,
+            "q_wing": 200.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 148000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 148000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.5, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.5,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 1, "oscillator_strength": 0.01219, "type": "CRD",
-          "quadrature": { "N_lambda": 40, "q_core": 4.0, "q_wing": 150.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 1,
+          "oscillator_strength": 0.01219,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 40,
+            "q_core": 4.0,
+            "q_wing": 150.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 150000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 150000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.5, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.5,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              }
             ]
           }
         },
         {
-          "upper_level_index": 4, "lower_level_index": 2, "oscillator_strength": 0.07242, "type": "CRD",
-          "quadrature": { "N_lambda": 80, "q_core": 4.0, "q_wing": 200.0 },
+          "upper_level_index": 4,
+          "lower_level_index": 2,
+          "oscillator_strength": 0.07242,
+          "type": "CRD",
+          "quadrature": {
+            "N_lambda": 80,
+            "q_core": 4.0,
+            "q_wing": 200.0
+          },
           "broadening": {
-            "natural": [ { "type": "RadiativeBroadening", "gamma": 150000000.0 } ],
+            "natural": [
+              {
+                "type": "RadiativeBroadening",
+                "gamma": 150000000.0
+              }
+            ],
             "elastic": [
-              { "type": "VdwUnsold", "vals": [ 1.5, 1.0 ] },
-              { "type": "QuadraticStarkBroadening", "coeff": 1.0 }
+              {
+                "type": "VdwUnsold",
+                "vals": [
+                  1.5,
+                  1.0
+                ]
+              },
+              {
+                "type": "QuadraticStarkBroadening",
+                "coeff": 1.0
+              }
             ]
           }
         }
       ],
       "continua": [
-        {"upper_level_index": 5, "lower_level_index": 0, "photoionization_cross_section": [[35.0, 1.0486e-23], [40.0, 1.2248e-23], [45.0, 1.3944e-23], [50.0, 1.5539e-23], [55.0, 1.7001e-23], [60.0, 1.8302e-23], [65.0, 1.9419e-23], [70.0, 2.0332e-23], [75.0, 2.1025e-23], [80.0, 2.1489e-23], [85.0, 2.1715e-23], [90.0, 2.1704e-23], [95.0, 2.1455e-23], [100.0, 2.0974e-23], [104.4, 2.0363e-23]]},
-        {"upper_level_index": 5, "lower_level_index": 1, "photoionization_cross_section": [[30.0, 1.1734e-22], [35.0, 1.5169e-22], [40.0, 1.862e-22], [45.0, 2.2021e-22], [50.0, 2.5339e-22], [55.0, 2.8561e-22], [60.0, 3.1682e-22], [65.0, 3.4701e-22], [70.0, 3.7619e-22], [75.0, 4.0436e-22], [80.0, 4.315e-22], [85.0, 4.5762e-22], [90.0, 4.8268e-22], [95.0, 5.0663e-22], [100.0, 5.2947e-22], [105.0, 5.5114e-22], [110.0, 5.7157e-22], [115.0, 5.9073e-22], [120.0, 6.086e-22], [121.7, 6.1484e-22]]},
-        {"upper_level_index": 5, "lower_level_index": 2, "photoionization_cross_section": [[30.0, 1.1734e-22], [35.0, 1.5169e-22], [40.0, 1.862e-22], [45.0, 2.2021e-22], [50.0, 2.5339e-22], [55.0, 2.8561e-22], [60.0, 3.1682e-22], [65.0, 3.4701e-22], [70.0, 3.7619e-22], [75.0, 4.0436e-22], [80.0, 4.315e-22], [85.0, 4.5762e-22], [90.0, 4.8268e-22], [95.0, 5.0663e-22], [100.0, 5.2947e-22], [105.0, 5.5114e-22], [110.0, 5.7157e-22], [115.0, 5.9073e-22], [120.0, 6.086e-22], [121.8, 6.1484e-22]]},
-        {"upper_level_index": 5, "lower_level_index": 3, "photoionization_cross_section": [[60.0, 1.013e-23], [65.0, 1.3249e-23], [70.0, 1.7266e-23], [75.0, 2.2293e-23], [80.0, 2.8438e-23], [85.0, 3.5808e-23], [90.0, 4.4507e-23], [95.0, 5.464e-23], [100.0, 6.6309e-23], [105.0, 7.9613e-23], [110.0, 9.465e-23], [115.0, 1.1152e-22], [120.0, 1.3031e-22], [125.0, 1.5113e-22], [130.0, 1.7407e-22], [135.0, 1.9921e-22], [140.0, 2.2664e-22], [141.7, 2.3823e-22]]},
-        {"upper_level_index": 5, "lower_level_index": 4, "photoionization_cross_section": [[60.0, 1.013e-23], [65.0, 1.3249e-23], [70.0, 1.7266e-23], [75.0, 2.2293e-23], [80.0, 2.8438e-23], [85.0, 3.5808e-23], [90.0, 4.4507e-23], [95.0, 5.464e-23], [100.0, 6.6309e-23], [105.0, 7.9613e-23], [110.0, 9.465e-23], [115.0, 1.1152e-22], [120.0, 1.3031e-22], [125.0, 1.5113e-22], [130.0, 1.7407e-22], [135.0, 1.9921e-22], [140.0, 2.2664e-22], [142.1, 2.3823e-22]]}
+        {
+          "type": "ExplicitContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 0,
+          "photoionization_cross_section": [
+            [
+              35.0,
+              1.0486e-23
+            ],
+            [
+              40.0,
+              1.2248e-23
+            ],
+            [
+              45.0,
+              1.3944e-23
+            ],
+            [
+              50.0,
+              1.5539e-23
+            ],
+            [
+              55.0,
+              1.7001e-23
+            ],
+            [
+              60.0,
+              1.8302e-23
+            ],
+            [
+              65.0,
+              1.9419e-23
+            ],
+            [
+              70.0,
+              2.0331999999999998e-23
+            ],
+            [
+              75.0,
+              2.1025e-23
+            ],
+            [
+              80.0,
+              2.1488999999999998e-23
+            ],
+            [
+              85.0,
+              2.1715e-23
+            ],
+            [
+              90.0,
+              2.1703999999999996e-23
+            ],
+            [
+              95.0,
+              2.1455000000000004e-23
+            ],
+            [
+              100.0,
+              2.0973999999999996e-23
+            ],
+            [
+              104.39996797008983,
+              2.0363005087429266e-23
+            ]
+          ]
+        },
+        {
+          "type": "ExplicitContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 1,
+          "photoionization_cross_section": [
+            [
+              30.0,
+              1.1734e-22
+            ],
+            [
+              35.0,
+              1.5169e-22
+            ],
+            [
+              40.0,
+              1.862e-22
+            ],
+            [
+              45.0,
+              2.2021e-22
+            ],
+            [
+              50.0,
+              2.5339e-22
+            ],
+            [
+              55.0,
+              2.8561e-22
+            ],
+            [
+              60.0,
+              3.1682e-22
+            ],
+            [
+              65.0,
+              3.4700999999999998e-22
+            ],
+            [
+              70.0,
+              3.7619e-22
+            ],
+            [
+              75.0,
+              4.0435999999999994e-22
+            ],
+            [
+              80.0,
+              4.315e-22
+            ],
+            [
+              85.0,
+              4.5762e-22
+            ],
+            [
+              90.0,
+              4.8268e-22
+            ],
+            [
+              95.0,
+              5.0663e-22
+            ],
+            [
+              100.0,
+              5.2947e-22
+            ],
+            [
+              105.0,
+              5.5114e-22
+            ],
+            [
+              110.0,
+              5.7157e-22
+            ],
+            [
+              115.0,
+              5.9073e-22
+            ],
+            [
+              120.0,
+              6.086e-22
+            ],
+            [
+              121.7,
+              6.1484e-22
+            ],
+            [
+              121.75036111157107,
+              6.1484e-22
+            ]
+          ]
+        },
+        {
+          "type": "ExplicitContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 2,
+          "photoionization_cross_section": [
+            [
+              30.0,
+              1.1734e-22
+            ],
+            [
+              35.0,
+              1.5169e-22
+            ],
+            [
+              40.0,
+              1.862e-22
+            ],
+            [
+              45.0,
+              2.2021e-22
+            ],
+            [
+              50.0,
+              2.5339e-22
+            ],
+            [
+              55.0,
+              2.8561e-22
+            ],
+            [
+              60.0,
+              3.1682e-22
+            ],
+            [
+              65.0,
+              3.4700999999999998e-22
+            ],
+            [
+              70.0,
+              3.7619e-22
+            ],
+            [
+              75.0,
+              4.0435999999999994e-22
+            ],
+            [
+              80.0,
+              4.315e-22
+            ],
+            [
+              85.0,
+              4.5762e-22
+            ],
+            [
+              90.0,
+              4.8268e-22
+            ],
+            [
+              95.0,
+              5.0663e-22
+            ],
+            [
+              100.0,
+              5.2947e-22
+            ],
+            [
+              105.0,
+              5.5114e-22
+            ],
+            [
+              110.0,
+              5.7157e-22
+            ],
+            [
+              115.0,
+              5.9073e-22
+            ],
+            [
+              120.0,
+              6.086e-22
+            ],
+            [
+              121.8,
+              6.1484e-22
+            ],
+            [
+              121.8403893336537,
+              6.1484e-22
+            ]
+          ]
+        },
+        {
+          "type": "ExplicitContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 3,
+          "photoionization_cross_section": [
+            [
+              60.0,
+              1.013e-23
+            ],
+            [
+              65.0,
+              1.3249e-23
+            ],
+            [
+              70.0,
+              1.7266e-23
+            ],
+            [
+              75.0,
+              2.2292999999999997e-23
+            ],
+            [
+              80.0,
+              2.8438e-23
+            ],
+            [
+              85.0,
+              3.5808000000000004e-23
+            ],
+            [
+              90.0,
+              4.4506999999999994e-23
+            ],
+            [
+              95.0,
+              5.464e-23
+            ],
+            [
+              100.0,
+              6.630899999999999e-23
+            ],
+            [
+              105.0,
+              7.9613e-23
+            ],
+            [
+              110.0,
+              9.465e-23
+            ],
+            [
+              115.0,
+              1.1152e-22
+            ],
+            [
+              120.0,
+              1.3031e-22
+            ],
+            [
+              125.0,
+              1.5113000000000003e-22
+            ],
+            [
+              130.0,
+              1.7407e-22
+            ],
+            [
+              135.0,
+              1.9921000000000003e-22
+            ],
+            [
+              140.0,
+              2.2664e-22
+            ],
+            [
+              141.65517843169584,
+              2.3790967731841673e-22
+            ]
+          ]
+        },
+        {
+          "type": "ExplicitContinuum",
+          "upper_level_index": 5,
+          "lower_level_index": 4,
+          "photoionization_cross_section": [
+            [
+              60.0,
+              1.013e-23
+            ],
+            [
+              65.0,
+              1.3249e-23
+            ],
+            [
+              70.0,
+              1.7266e-23
+            ],
+            [
+              75.0,
+              2.2292999999999997e-23
+            ],
+            [
+              80.0,
+              2.8438e-23
+            ],
+            [
+              85.0,
+              3.5808000000000004e-23
+            ],
+            [
+              90.0,
+              4.4506999999999994e-23
+            ],
+            [
+              95.0,
+              5.464e-23
+            ],
+            [
+              100.0,
+              6.630899999999999e-23
+            ],
+            [
+              105.0,
+              7.9613e-23
+            ],
+            [
+              110.0,
+              9.465e-23
+            ],
+            [
+              115.0,
+              1.1152e-22
+            ],
+            [
+              120.0,
+              1.3031e-22
+            ],
+            [
+              125.0,
+              1.5113000000000003e-22
+            ],
+            [
+              130.0,
+              1.7407e-22
+            ],
+            [
+              135.0,
+              1.9921000000000003e-22
+            ],
+            [
+              140.0,
+              2.2664e-22
+            ],
+            [
+              142.1,
+              2.3823e-22
+            ]
+          ]
+        }
       ],
       "collisions": [
-        {"type": "Omega", "upper_level_index": 1, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [2.378, 2.284, 2.203, 1.92, 1.961, 1.846]},
-        {"type": "Omega", "upper_level_index": 2, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [3.568, 3.426, 3.304, 2.879, 2.942, 2.77]},
-        {"type": "Omega", "upper_level_index": 2, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [1.778, 2.869, 4.693, 12.66, 3.189, 7.926]},
-        {"type": "Omega", "upper_level_index": 3, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [4.842, 5.288, 5.548, 6.148, 8.482, 12.0]},
-        {"type": "Omega", "upper_level_index": 4, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [9.683, 10.58, 11.1, 12.3, 16.96, 24.01]},
-        {"type": "Omega", "upper_level_index": 4, "lower_level_index": 3, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [0.8511, 1.364, 1.878, 4.002, 11.11, 18.73]},
-        {"type": "Omega", "upper_level_index": 3, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [13.6, 14.33, 14.96, 16.99, 22.8, 28.36]},
-        {"type": "Omega", "upper_level_index": 4, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [6.316, 6.488, 6.623, 7.033, 8.08, 8.899]},
-        {"type": "Omega", "upper_level_index": 3, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [4.338, 4.282, 4.203, 3.929, 3.315, 2.641]},
-        {"type": "Omega", "upper_level_index": 4, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [25.04, 26.36, 27.51, 31.22, 42.17, 52.84]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 0, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [4.58e-18, 4.58e-18, 4.58e-18, 4.58e-18, 4.58e-18, 4.58e-18]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 1, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [1.613e-16, 1.613e-16, 1.613e-16, 1.613e-16, 1.613e-16, 1.613e-16]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 2, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [1.614e-16, 1.614e-16, 1.614e-16, 1.614e-16, 1.614e-16, 1.614e-16]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 3, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [7.272e-17, 7.272e-17, 7.272e-17, 7.272e-17, 7.272e-17, 7.272e-17]},
-        {"type": "CI", "upper_level_index": 5, "lower_level_index": 4, "temperatures": [3000.0, 5000.0, 7000.0, 15000.0, 50000.0, 100000.0], "rates": [7.295e-17, 7.295e-17, 7.295e-17, 7.295e-17, 7.295e-17, 7.295e-17]}
+        {
+          "type": "Omega",
+          "upper_level_index": 1,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            2.378,
+            2.284,
+            2.203,
+            1.92,
+            1.961,
+            1.846
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 2,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            3.568,
+            3.426,
+            3.304,
+            2.879,
+            2.942,
+            2.77
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 2,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            1.778,
+            2.869,
+            4.693,
+            12.66,
+            3.189,
+            7.926
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 3,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            4.842,
+            5.288,
+            5.548,
+            6.148,
+            8.482,
+            12.0
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 4,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            9.683,
+            10.58,
+            11.1,
+            12.3,
+            16.96,
+            24.01
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 4,
+          "lower_level_index": 3,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            0.8511,
+            1.364,
+            1.878,
+            4.002,
+            11.11,
+            18.73
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 3,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            13.6,
+            14.33,
+            14.96,
+            16.99,
+            22.8,
+            28.36
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 4,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            6.316,
+            6.488,
+            6.623,
+            7.033,
+            8.08,
+            8.899
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 3,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            4.338,
+            4.282,
+            4.203,
+            3.929,
+            3.315,
+            2.641
+          ]
+        },
+        {
+          "type": "Omega",
+          "upper_level_index": 4,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            25.04,
+            26.36,
+            27.51,
+            31.22,
+            42.17,
+            52.84
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 0,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            4.58e-18,
+            4.58e-18,
+            4.58e-18,
+            4.58e-18,
+            4.58e-18,
+            4.58e-18
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 1,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            1.613e-16,
+            1.613e-16,
+            1.613e-16,
+            1.613e-16,
+            1.613e-16,
+            1.613e-16
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 2,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            1.614e-16,
+            1.614e-16,
+            1.614e-16,
+            1.614e-16,
+            1.614e-16,
+            1.614e-16
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 3,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            7.272e-17,
+            7.272e-17,
+            7.272e-17,
+            7.272e-17,
+            7.272e-17,
+            7.272e-17
+          ]
+        },
+        {
+          "type": "CI",
+          "upper_level_index": 5,
+          "lower_level_index": 4,
+          "temperatures": [
+            3000.0,
+            5000.0,
+            7000.0,
+            15000.0,
+            50000.0,
+            100000.0
+          ],
+          "rates": [
+            7.295e-17,
+            7.295e-17,
+            7.295e-17,
+            7.295e-17,
+            7.295e-17,
+            7.295e-17
+          ]
+        }
       ],
       "irwin_coefficients": {
-        "2": [1.65874025e+03, -1.04392185e+03, 2.61702809e+02, -3.26369424e+01, 2.02350114e+00, -4.98594460e-02],
-        "3": [-1.24819814e-03, 7.75158073e-04, -1.92014703e-04, 2.37150053e-05, -1.46034751e-06, 3.58695382e-08]
+        "2": [
+          1658.74025,
+          -1043.92185,
+          261.702809,
+          -32.6369424,
+          2.02350114,
+          -0.049859446
+        ],
+        "3": [
+          -0.00124819814,
+          0.000775158073,
+          -0.000192014703,
+          2.37150053e-5,
+          -1.46034751e-6,
+          3.58695382e-8
+        ]
       }
     }
   ],
-
   "atmosphere": {
-    "turbulent_velocity": 302475.43859649124,
+    "turbulent_velocity": 3e5,
     "zgrid": [
-      -98.9267, -88.9234, -78.9203, -68.9173, -58.9142, -48.911, -38.9077,
-      -28.9038, -18.8998, -8.89568, 1.10832, 11.1125, 21.1171, 36.1194, 51.1221,
-      76.0846, 101.038, 125.982, 150.918, 175.845, 200.747, 249.767, 298.72,
-      347.611, 396.447, 445.232, 484.574, 519.119, 553.646, 592.939, 641.527,
-      694.663, 743.337, 792.18, 841.15, 899.577, 967.298, 1057.09, 1147.43,
-      1242.79, 1334.41, 1437.53, 1538.97, 1623.33, 1715.31, 1794.57, 1856.21,
-      1904.84, 1960.53, 2014.28, 2062.13, 2094.1, 2108.1, 2115.43, 2117.29,
-      2118.4, 2119.28
+      0.0,
+      10.49102775371354,
+      20.98172505144682,
+      31.472333633449395,
+      41.9630645218282,
+      52.45383476806386,
+      62.944812733888625,
+      73.43623054709518,
+      83.92793276637094,
+      94.41985248170094,
+      104.9115207063281,
+      115.40341842400282,
+      125.89569334781449,
+      141.6292874454786,
+      157.3633977833232,
+      183.5429437930705,
+      209.71230892532645,
+      235.87302770066262,
+      262.0248245834084,
+      288.1660989791649,
+      314.2950757464364,
+      365.7566080047493,
+      417.1402164500933,
+      468.4516529288662,
+      519.698976001021,
+      570.8872194516824,
+      612.163884287547,
+      648.4041441536879,
+      684.6232375107705,
+      725.839523522594,
+      776.8042364422328,
+      832.5377934960215,
+      883.587850505679,
+      934.8115160189029,
+      986.1687205371919,
+      1047.4438615699055,
+      1118.466021198743,
+      1212.6360379658133,
+      1307.380982590335,
+      1407.3879259840521,
+      1503.4771149505875,
+      1611.6254852377433,
+      1718.0102458298984,
+      1806.4776450356067,
+      1902.942203153915,
+      1986.0638901446578,
+      2050.7112209865477,
+      2101.7067536409795,
+      2160.115948060282,
+      2216.4825722773194,
+      2266.667261475494,
+      2300.194722182846,
+      2314.877022454202,
+      2322.5652551753496,
+      2324.5153643499157,
+      2325.6794233917617,
+      2326.60249163581,
+      2327.242466700783,
+      2327.7456525005837,
+      2328.10228536835,
+      2328.3957001140907,
+      2328.6581982410116,
+      2328.9616322082675,
+      2329.2340351682305,
+      2329.443780206942,
+      2329.705079816619,
+      2330.039382282027,
+      2330.343018469625,
+      2330.6672017820792,
+      2331.014061863693,
+      2331.3803430728726,
+      2331.7577209388555,
+      2332.1460284661975,
+      2332.5651526779175,
+      2333.43410010359,
+      2334.32552168554,
+      2335.2031335143074,
+      2336.0758131187204,
+      2337.782514722016,
+      2339.4904459300433,
+      2340.779539262779,
+      2342.0588466065033
     ],
     "temp": [
-      9400.0, 9140.0, 8860.0, 8540.0, 8220.0, 7900.0, 7590.0, 7280.0, 6980.0,
-      6720.0, 6520.0, 6340.0, 6180.0, 5980.0, 5790.0, 5580.0, 5410.0, 5270.0,
-      5150.0, 5060.0, 4990.0, 4880.0, 4780.0, 4690.0, 4610.0, 4540.0, 4510.0,
-      4500.0, 4520.0, 4560.0, 4680.0, 4900.0, 5160.0, 5380.0, 5570.0, 5760.0,
-      5950.0, 6180.0, 6370.0, 6570.0, 6740.0, 6910.0, 7080.0, 7220.0, 7410.0,
-      7600.0, 7780.0, 7970.0, 8273.0, 8635.0, 8988.0, 9228.0, 9358.0, 9458.0,
-      9587.0, 9735.0, 9983.0
+      9400.0,
+      9140.0,
+      8860.0,
+      8540.0,
+      8220.0,
+      7900.0,
+      7590.0,
+      7280.0,
+      6980.0,
+      6720.0,
+      6520.0,
+      6340.0,
+      6180.0,
+      5980.0,
+      5790.0,
+      5580.0,
+      5410.0,
+      5270.0,
+      5150.0,
+      5060.0,
+      4990.0,
+      4880.0,
+      4780.0,
+      4690.0,
+      4610.0,
+      4540.0,
+      4510.0,
+      4500.0,
+      4520.0,
+      4560.0,
+      4680.0,
+      4900.0,
+      5160.0,
+      5380.0,
+      5570.0,
+      5760.0,
+      5950.0,
+      6180.0,
+      6370.0,
+      6570.0,
+      6740.0,
+      6910.0,
+      7080.0,
+      7220.0,
+      7410.0,
+      7600.0,
+      7780.0,
+      7970.0,
+      8273.0,
+      8635.0,
+      8988.0,
+      9228.0,
+      9358.0,
+      9458.0,
+      9587.0,
+      9735.0,
+      9983.0,
+      10340.0,
+      10850.0,
+      11440.0,
+      12190.0,
+      13080.0,
+      14520.0,
+      16280.0,
+      17930.0,
+      20420.0,
+      24060.0,
+      27970.0,
+      32150.0,
+      36590.0,
+      41180.0,
+      45420.0,
+      49390.0,
+      53280.0,
+      60170.0,
+      66150.0,
+      71340.0,
+      75930.0,
+      83890.0,
+      90820.0,
+      95600.0,
+      100000.0
     ],
     "pg": [
-      200000.0, 191000.0, 182000.0, 174000.0, 166000.0, 158000.0, 150000.0,
-      142000.0, 134000.0, 127000.0, 119000.0, 112000.0, 105000.0, 94700.0,
-      85300.0, 71300.0, 59100.0, 48600.0, 39800.0, 32500.0, 26300.0, 17200.0,
-      11100.0, 7110.0, 4520.0, 2850.0, 1970.0, 1420.0, 1020.0, 709.0, 452.0,
-      280.0, 186.0, 127.0, 87.7, 57.7, 36.1, 19.6, 11.0, 6.37, 3.96, 2.42, 1.57,
-      1.14, 0.827, 0.645, 0.542, 0.478, 0.418, 0.372, 0.338, 0.318, 0.309,
-      0.305, 0.306, 0.307, 0.308
+      194360.59852300538,
+      185949.8752940163,
+      177637.60499571922,
+      169350.98093471947,
+      161477.71808594695,
+      153603.2622360102,
+      145685.212542477,
+      138049.61890308862,
+      130354.56690305425,
+      122858.9330686445,
+      115545.74404843498,
+      108503.78509095211,
+      101761.33913872606,
+      92144.31742844734,
+      83129.04839901268,
+      69637.13353588873,
+      57867.297651366585,
+      47798.101296511784,
+      39227.16714337989,
+      32056.3603253688,
+      26048.910412275487,
+      17065.59781712249,
+      11047.112752512538,
+      7076.054079812381,
+      4492.548378348272,
+      2830.332339831663,
+      1948.3832232672855,
+      1403.1502059731934,
+      1010.6526561447149,
+      696.7059724363179,
+      441.41175071028016,
+      272.2345377793315,
+      179.6570938832445,
+      121.03372432388261,
+      83.02150612810432,
+      53.95657072376915,
+      33.2059852440345,
+      17.541014690488513,
+      9.572158756469175,
+      5.342692237240545,
+      3.2239188731607427,
+      1.9217070866674548,
+      1.2207046096318486,
+      0.8718113350959494,
+      0.6268789762495007,
+      0.4869927898753421,
+      0.4082539244079203,
+      0.35998496296636,
+      0.31638008384650085,
+      0.282811492583549,
+      0.2575005380848928,
+      0.24175749711184902,
+      0.23508183722919232,
+      0.23249610230173373,
+      0.23518079436035982,
+      0.23767603551822947,
+      0.2407749517793036,
+      0.24424860312801364,
+      0.24844195239467234,
+      0.2525725925685381,
+      0.25704144754081676,
+      0.261691811356639,
+      0.2680505707705019,
+      0.27449146047957085,
+      0.27958839444995864,
+      0.2859657789729171,
+      0.2932710075888594,
+      0.29929999377151506,
+      0.30440191565097424,
+      0.30872200993891274,
+      0.3123366591134745,
+      0.31513451157818956,
+      0.3173744065330758,
+      0.31929269201829763,
+      0.32218401790231566,
+      0.3242670435640229,
+      0.32583318923041404,
+      0.32705467026447455,
+      0.3288687903006694,
+      0.33019748494101875,
+      0.33099314124138457,
+      0.331656179906554
     ],
     "pel": [
-      4970.0, 3730.0, 2680.0, 1810.0, 1180.0, 749.0, 466.0, 280.0, 166.0, 102.0,
-      68.8, 47.8, 34.4, 22.7, 15.6, 10.2, 7.33, 5.52, 4.26, 3.36, 2.67, 1.72,
-      1.11, 0.712, 0.456, 0.291, 0.205, 0.152, 0.113, 0.0823, 0.0589, 0.051,
-      0.0596, 0.0724, 0.0855, 0.0978, 0.107, 0.114, 0.113, 0.111, 0.106, 0.0984,
-      0.094, 0.0916, 0.0904, 0.0886, 0.087, 0.0863, 0.0864, 0.0855, 0.0825,
-      0.0783, 0.0755, 0.0758, 0.0829, 0.0887, 0.0944
+      4972.85254996356,
+      3725.6699665200276,
+      2684.5591234894414,
+      1806.1130044682757,
+      1181.7532297066198,
+      749.283311036757,
+      466.00327110614967,
+      280.3748174181864,
+      165.68060650564516,
+      102.03901815743998,
+      68.78605496138319,
+      47.76559512893827,
+      34.37063269120007,
+      22.696855031501816,
+      15.592366398551487,
+      10.241248426419958,
+      7.331939255088264,
+      5.5187391073151355,
+      4.2554403516820996,
+      3.3556962583479932,
+      2.6734845057173047,
+      1.7230290324063517,
+      1.108747390620434,
+      0.7120961597977009,
+      0.4561804194401871,
+      0.291401741222878,
+      0.2051306787332242,
+      0.15165844560148498,
+      0.11346456846400757,
+      0.08234160813981599,
+      0.05889518056926035,
+      0.05103670133426269,
+      0.05958135124867895,
+      0.07236353778319193,
+      0.08548896638868868,
+      0.09780564347614079,
+      0.1074698582958735,
+      0.11441169395413739,
+      0.11258288670293208,
+      0.11074372858810888,
+      0.10587007669047559,
+      0.09844591047567228,
+      0.09396665471615302,
+      0.09156541354562993,
+      0.09042198007704691,
+      0.08861386341123999,
+      0.08695586613327153,
+      0.08634025386616018,
+      0.08637122544605315,
+      0.08546392216828239,
+      0.08254172024531059,
+      0.07825220418954361,
+      0.07546822960682989,
+      0.07575754339809268,
+      0.08292629921934222,
+      0.08869815972290492,
+      0.09439538985778079,
+      0.09947170457265864,
+      0.10473688596688728,
+      0.10927457300112495,
+      0.1135554706564909,
+      0.11774565329395847,
+      0.12303311372406647,
+      0.1281298531789971,
+      0.13213119593413034,
+      0.13704083276355686,
+      0.14254609816698435,
+      0.146903957753752,
+      0.15065743082668454,
+      0.15375617062554142,
+      0.15627950370546023,
+      0.15826422936024026,
+      0.1598811200646916,
+      0.16130664740559886,
+      0.16361770800745146,
+      0.16546143199755012,
+      0.16692682397677952,
+      0.16812090045145897,
+      0.169965561349969,
+      0.1713271165265586,
+      0.17215369098060918,
+      0.17284220572589998
     ]
   }
 }

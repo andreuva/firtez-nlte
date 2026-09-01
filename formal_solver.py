@@ -336,6 +336,10 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
                     total_damping += line.stark_c23 * line.stark_vrel_factor * atmosphere.temp[iz]**(1.0/6.0) * atmosphere.ne[iz]
                 elif elastic.get("type") == "HydrogenLinearStarkBroadening":
                     total_damping += line.lin_stark_factor * atmosphere.ne[iz]**(2.0/3.0)
+                elif elastic.get("type") == "VdwBarklem":
+                    total_damping += (line.barklem_c0 * atmosphere.temp[iz]**(0.5 * (1.0 - line.barklem_c1)) + line.vdw_cross * atmosphere.temp[iz]**0.3) * nHGround
+                elif elastic.get("type") == "MultiplicativeStarkBroadening":
+                    total_damping += line.mult_stark_coeff * atmosphere.ne[iz]
                 else:
                     raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
@@ -344,6 +348,7 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
             voigt_line = voigt(dop_freq, a_damp).real
 
             # Truncate outside the line's own physical grid boundary
+            # TO CHECK: WHY THIS MATTERS SO MUCH IN THE SOLUTION??????
             mask = np.abs(freq_grid - line.nu0) <= line.max_delta_nu
             voigt_line[~mask] = 0.0
 
@@ -352,6 +357,7 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
             n_u = atom.populations[iz, line.upper_level_index]
             n_l = atom.populations[iz, line.lower_level_index]
 
+            # TO CHECK: efect of using line.nu0 instead of freq_grid
             emis += (h_CGS*line.nu0/(4*np.pi))* n_u * line.Aul * voigt_norm
             abs +=  (h_CGS*line.nu0/(4*np.pi))* voigt_norm * (n_l*line.Blu - n_u*line.Bul)
 
@@ -445,6 +451,7 @@ def add_background_opacity(iz: int,
     # total  = kappa + sigma
     # return total * B, total
     opp = kappa + sigma
+    # TO CHECK: Difference between J_nu and B?
     ems = kappa*B + sigma*atmosphere.J_nu[iz, :]
     return ems, opp
 
@@ -702,12 +709,14 @@ def add_background_opacity_old(iz: int,
         # Ported from cont_opacity.f90 (Dalgarno 1962 fit)
         sigma_rayleigh = opac_rayleigh_h_dalgarno(freq_grid)
         kappa_rayleigh = n_H_I * sigma_rayleigh
+        # TO CHECK: Difference between J_nu and B?
         emis_c += kappa_rayleigh * atmosphere.J_nu[iz, :]
         abs_c += kappa_rayleigh
     
     # --- Scattering (Thomson & Rayleigh) ---
     # Thomson scattering (electrons)
     kappa_thomson = atmosphere.ne[iz] * (8*np.pi/3)*((q_e_CGS/c_CGS)**4)/m_e_CGS**2
+    # TO CHECK: Difference between J_nu and B?
     emis_c += kappa_thomson * atmosphere.J_nu[iz, :]
     abs_c += kappa_thomson
 

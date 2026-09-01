@@ -3,6 +3,10 @@ from typing import List, Tuple, Dict, Any, TYPE_CHECKING
 import numpy as np
 from constants import *
 from debug_functions import print_eq_system
+import atomic_data
+
+from scipy.interpolate import RectBivariateSpline
+from scipy.special import gamma
 
 if TYPE_CHECKING:
     from atmosphere import Atmosphere
@@ -45,6 +49,82 @@ class Broadening:
             natural=data.get('natural', []),
             elastic=data.get('elastic', [])
         )
+
+class BarklemTable:
+    def __init__(self, cs_flat, al_flat, shape, neff0):
+        self.cross = np.array(cs_flat).reshape(shape)
+        self.alpha = np.array(al_flat).reshape(shape)
+        self.neff1 = neff0[0] + np.arange(shape[0]) * 0.1
+        self.neff2 = neff0[1] + np.arange(shape[1]) * 0.1
+
+class Barklem:
+    barklem_sp = BarklemTable(atomic_data.cs_sp_flat, atomic_data.al_sp_flat, (46, 43), (1.0, 1.3))
+    barklem_pd = BarklemTable(atomic_data.cs_pd_flat, atomic_data.al_pd_flat, (43, 33), (1.3, 2.3))
+    barklem_df = BarklemTable(atomic_data.cs_df_flat, atomic_data.al_df_flat, (33, 28), (2.3, 3.3))
+
+def get_barklem_cross_section(atom, line, vals):
+    SOrbit = 0
+    POrbit = 1
+    DOrbit = 2
+    FOrbit = 3
+
+    result = [vals[0], vals[1], 0.0]
+
+    if vals[0] < 20.0:
+        lowerNum = atom.levels[line.lower_level_index].L
+        upperNum = atom.levels[line.upper_level_index].L
+        if lowerNum is None or upperNum is None:
+            raise ValueError('L not provided for levels.')
+
+        nums = (lowerNum, upperNum)
+        if nums == (SOrbit, POrbit) or nums == (POrbit, SOrbit):
+            table = Barklem.barklem_sp
+        elif nums == (POrbit, DOrbit) or nums == (DOrbit, POrbit):
+            table = Barklem.barklem_pd
+        elif nums == (DOrbit, FOrbit) or nums == (FOrbit, DOrbit):
+            table = Barklem.barklem_df
+        else:
+            raise ValueError('Not a valid shell combination.')
+
+        Z = 1
+        
+        # We need the continuum level for limits
+        upper_lvl = atom.levels[line.upper_level_index]
+        lower_lvl = atom.levels[line.lower_level_index]
+        current_ion = upper_lvl.ionization
+        cont_level = next((lvl for lvl in atom.levels if lvl.ionization == current_ion + 1), None)
+        E_cont = cont_level.energy if cont_level else atom.levels[-1].energy
+
+        deltaEi = E_cont - lower_lvl.energy
+        deltaEj = E_cont - upper_lvl.energy
+        E_Rydberg = E_Ryd_erg / (1.0 + m_e_CGS / (atom.mass * m_u_CGS))
+
+        neff1 = Z * np.sqrt(E_Rydberg / deltaEi)
+        neff2 = Z * np.sqrt(E_Rydberg / deltaEj)
+
+        if nums[0] > nums[1]:
+            neff1, neff2 = neff2, neff1
+
+        if not (table.neff1[0] <= neff1 <= table.neff1[-1]):
+            raise ValueError(f'neff1 ({neff1}) outside table [{table.neff1[0]}, {table.neff1[-1]}].')
+        if not (table.neff2[0] <= neff2 <= table.neff2[-1]):
+            raise ValueError(f'neff2 ({neff2}) outside table [{table.neff2[0]}, {table.neff2[-1]}].')
+
+        result[0] = float(RectBivariateSpline(table.neff1, table.neff2, table.cross)(neff1, neff2)[0, 0])
+        result[1] = float(RectBivariateSpline(table.neff1, table.neff2, table.alpha)(neff1, neff2)[0, 0])
+
+    reducedMass = m_u_CGS / (1.0 / 1.008 + 1.0 / atom.mass)
+    meanVel = np.sqrt(8.0 * kB_CGS / (np.pi * reducedMass))
+    sigma = result[0]
+    alpha = result[1]
+    crossSection = sigma * a0_CGS**2 * (meanVel / 1e6)**(-alpha)
+
+    result[0] = 2.0 * ((4.0 / np.pi)**(alpha / 2.0)
+                 * gamma(2.0 - alpha / 2.0) * meanVel * crossSection)
+    result[2] = 1.0
+
+    return result
+
 
 @dataclass
 class Line:
