@@ -302,6 +302,70 @@ def voigt(v, a):
 
     return res
 
+
+
+def line_damping(line, atom, iz: int, atmosphere, nH_ground: float) -> float:
+    """
+    Total damping rate Gamma [s^-1] for one line at one depth: the sum of the natural width
+    and every configured elastic (collisional) broadening term.
+
+    Gamma is a *full* width in s^-1, so the Voigt damping parameter is a = Gamma/(4 pi dnuD)
+    (the Lorentzian HWHM in ordinary frequency is Gamma/4pi).
+    """
+    total = 0.0
+    for natural in line.broadening.natural:
+        if natural.get("type") == "RadiativeBroadening":
+            total += natural.get("gamma", 0.0)
+        else:
+            raise NotImplementedError(f"Natural broadening type {natural.get('type')} not implemented.")
+
+    T = atmosphere.temp[iz]
+    ne = atmosphere.ne[iz]
+    for elastic in line.broadening.elastic:
+        etype = elastic.get("type")
+        if etype == "VdwUnsold":
+            total += line.vdw_cross * T**0.3 * nH_ground
+        elif etype == "QuadraticStarkBroadening":
+            total += line.stark_c23 * line.stark_vrel_factor * T**(1.0/6.0) * ne
+        elif etype == "HydrogenLinearStarkBroadening":
+            total += line.lin_stark_factor * ne**(2.0/3.0)
+        elif etype == "VdwBarklem":
+            total += (line.barklem_c0 * T**(0.5 * (1.0 - line.barklem_c1))
+                      + line.vdw_cross * T**0.3) * nH_ground
+        elif etype == "MultiplicativeStarkBroadening":
+            total += line.mult_stark_coeff * ne
+        else:
+            raise NotImplementedError(f"Elastic broadening type {etype} not implemented.")
+    return total
+
+
+def line_profile(line, atom, iz: int, freq_grid: np.ndarray, atmosphere, nH_ground: float) -> np.ndarray:
+    """
+    Normalised Voigt profile phi_nu [Hz^-1] on the global frequency grid, zero outside the
+    line's own window.
+
+    Single source of truth for the profile: main.py's J-bar/Lambda*-bar loop and
+    get_RT_coefficients must use bit-identical profiles or the MALI preconditioning breaks
+    (the opacity ratio chi_line/chi_total would be inconsistent with the operator it
+    weights). These were previously two verbatim copies (audit F-009).
+
+    Normalisation uses the per-line quadrature weights, not the global ones -- see
+    atoms.compute_line_frequency_weights and audit F-002.
+    """
+    dnuD = atom.doppler_widths[iz, line_index(atom, line)]
+    a_damp = line_damping(line, atom, iz, atmosphere, nH_ground) / (4.0 * np.pi * dnuD)
+    voigt_line = voigt((freq_grid - line.nu0) / dnuD, a_damp).real
+    voigt_line[~line.grid_mask] = 0.0
+    return voigt_line / np.sum(voigt_line * line.freq_weights)
+
+
+def line_index(atom, line) -> int:
+    """Index of `line` within `atom.lines` (needed to address the doppler_widths table)."""
+    for il, ln in enumerate(atom.lines):
+        if ln is line:
+            return il
+    raise ValueError("line does not belong to this atom")
+
 # --------------------------------------------------------------------------
 # RT coefficients and continiuum opacities
 def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.ndarray,
@@ -320,39 +384,7 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
         # Add the line contributions (Bound-Bound)
         for il, line in enumerate(atom.lines):
             
-            total_damping = 0.0
-            dop_freq = (freq_grid - line.nu0)/atom.doppler_widths[iz, il]
-
-            for natural in line.broadening.natural:
-                if natural.get("type") == "RadiativeBroadening":
-                    total_damping += natural.get("gamma", 0.0)
-                else:
-                    raise NotImplementedError(f"Natural broadening type {natural.get('type')} not implemented.")
-
-            for elastic in line.broadening.elastic:
-                if elastic.get("type") == "VdwUnsold":
-                    total_damping += line.vdw_cross * atmosphere.temp[iz]**0.3 * nHGround
-                elif elastic.get("type") == "QuadraticStarkBroadening":
-                    total_damping += line.stark_c23 * line.stark_vrel_factor * atmosphere.temp[iz]**(1.0/6.0) * atmosphere.ne[iz]
-                elif elastic.get("type") == "HydrogenLinearStarkBroadening":
-                    total_damping += line.lin_stark_factor * atmosphere.ne[iz]**(2.0/3.0)
-                elif elastic.get("type") == "VdwBarklem":
-                    total_damping += (line.barklem_c0 * atmosphere.temp[iz]**(0.5 * (1.0 - line.barklem_c1)) + line.vdw_cross * atmosphere.temp[iz]**0.3) * nHGround
-                elif elastic.get("type") == "MultiplicativeStarkBroadening":
-                    total_damping += line.mult_stark_coeff * atmosphere.ne[iz]
-                else:
-                    raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
-
-            a_damp = total_damping / (4.0* np.pi * atom.doppler_widths[iz, il])
-
-            voigt_line = voigt(dop_freq, a_damp).real
-
-            # Truncate outside the line's own physical grid boundary
-            # TO CHECK: WHY THIS MATTERS SO MUCH IN THE SOLUTION??????
-            mask = np.abs(freq_grid - line.nu0) <= line.max_delta_nu
-            voigt_line[~mask] = 0.0
-
-            voigt_norm = voigt_line / np.sum(voigt_line*weigths_freq_grid)
+            voigt_norm = line_profile(line, atom, iz, freq_grid, atmosphere, nHGround)
 
             n_u = atom.populations[iz, line.upper_level_index]
             n_l = atom.populations[iz, line.lower_level_index]
@@ -401,8 +433,12 @@ def add_background_opacity(iz: int,
                             atmosphere: Atmosphere) -> Tuple[np.ndarray, np.ndarray]:
     """
     Computes background continuum (emis_c, abs_c) using the complete
-    Wittmann/Mihalas opacity suite.  Under LTE: emis_c = kappa * B_nu.
-    Scattering is treated as absorption with S_nu = B_nu (valid for LTE bg).
+    Wittmann/Mihalas opacity suite.
+
+    Thermal absorption emits as kappa * B_nu; coherent scattering (Thomson + Rayleigh)
+    emits as sigma * J_nu, NOT sigma * B_nu, so the continuum source function is
+    (kappa*B + sigma*J)/(kappa + sigma). J_nu is the mean intensity from the previous
+    Lambda iteration -- see audit F-007 for the convergence implication.
     """
     T   = atmosphere.temp[iz]
     ne  = atmosphere.ne[iz]
@@ -424,8 +460,16 @@ def add_background_opacity(iz: int,
     n_He2 = sp['n_HeII_per_U'][iz]
     n_He3 = sp['n_HeIII'][iz]
 
+    # `atoms` is the list of ACTIVE NLTE atoms. Their bound-free transitions are already
+    # added by get_RT_coefficients, so they must not also be supplied by the LTE background
+    # (audit F-017).
+    h_atom = next((a for a in atoms if a.name == "H"), None)
+    n_H_bf_active = sum(1 for l in h_atom.levels if l.ionization == 0) if h_atom else 0
+    ca_active = any(a.name.startswith("Ca") for a in atoms)
+
     kappa = np.zeros_like(freq_grid)
-    kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2)
+    kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2,
+                                skip_bf_levels=n_H_bf_active)
     kappa += _opac_h_minus_wittmann(freq_grid, T, TKEV, ne, EHVKT, n_H1, n_Hm)
     kappa += _opac_h2plus(freq_grid, FREQLG, FREQ15, TKEV, STIM, n_H1, n_H2)
     kappa += _opac_he1(freq_grid, FREQLG, T, TLOG, TKEV, EHVKT, STIM, ne, n_He1, n_He2)
@@ -441,7 +485,7 @@ def add_background_opacity(iz: int,
         kappa += _opac_metals_luke(freq_grid, FREQLG, T, TLOG, TKEV, STIM,
                                     sp['n_NI_per_U'][iz], sp['n_OI_per_U'][iz],
                                     sp['n_MgII_per_U'][iz], sp['n_SiII_per_U'][iz],
-                                    sp['n_CaII_per_U'][iz])
+                                    0.0 if ca_active else sp['n_CaII_per_U'][iz])
 
     sigma  = 0.6653e-24 * ne
     sigma += _opac_rayleigh_h(freq_grid, n_H1)
@@ -461,8 +505,17 @@ def add_background_opacity(iz: int,
 # ===========================================================================
 
 def _opac_h_hydrogenic(freq, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM,
-                        ne, n_H1, n_H2):
-    """H bound-free (8 levels, Coulomb) + H free-free.  Port of wittmann.HOP."""
+                        ne, n_H1, n_H2, skip_bf_levels=0):
+    """
+    H bound-free (8 levels, Coulomb) + H free-free.  Port of wittmann.HOP.
+
+    `skip_bf_levels` omits the bound-free edges of the n = 1 .. skip_bf_levels levels,
+    for use when hydrogen is an ACTIVE NLTE atom whose own continua are already added by
+    get_RT_coefficients. Without this the same hydrogen bound-free opacity is counted
+    twice -- measured as a factor ~2.0 in the Lyman continuum (audit F-017). The free-free
+    term and the higher levels are always retained, since the active model does not carry
+    them. RH and Lightweaver exclude active atoms from the background for the same reason.
+    """
     FREQ3 = (freq * 1.0e-10) ** 3
     CFREE = 3.6919e-22 / FREQ3
     FREET = ne * CFREE * n_H2 / np.sqrt(T)
@@ -477,7 +530,9 @@ def _opac_h_hydrogenic(freq, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM,
     GAUNT = _coulff_vec(TLOG, FREQLG, NZ=1)
     H  = (CONT[6]*BOLT[6] + CONT[7]*BOLT[7]
           + (BOLTEX - EXLIM)*C + GAUNT*FREET) * STIM
-    H += np.sum(CONT[:6] * BOLT[:6, np.newaxis], axis=0) * (1.0 - EHVKT)
+    lo = min(int(skip_bf_levels), 6)          # CONT[:6] holds n = 1..6
+    if lo < 6:
+        H += np.sum(CONT[lo:6] * BOLT[lo:6, np.newaxis], axis=0) * (1.0 - EHVKT)
     return np.maximum(H, 0.0)
 
 
@@ -632,7 +687,12 @@ def _opac_metals_cool(freq, FREQLG, T, TLOG, TKEV, HTK, STIM,
 
 def _opac_metals_luke(freq, FREQLG, T, TLOG, TKEV, STIM,
                        n_N1, n_O1, n_Mg2, n_Si2, n_Ca2):
-    """N I, O I, Mg II, Si II, Ca II.  Port of wittmann.LUKEOP. Active T<30000 K."""
+    """
+    N I, O I, Mg II, Si II, Ca II.  Port of wittmann.LUKEOP. Active T<30000 K.
+
+    Pass n_Ca2 = 0.0 when Ca II is an active NLTE atom, so its bound-free edges are not
+    counted both here and in get_RT_coefficients (audit F-017).
+    """
     out = np.zeros_like(freq)
     # N I
     C1130 = 6.0*np.exp(-3.575/TKEV); C1020 = 10.0*np.exp(-2.384/TKEV)

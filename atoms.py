@@ -306,6 +306,12 @@ class MultiLevelAtom:
     abundance: float
     mass: float
     Z: int
+    # Passive atoms are held at their LTE populations: they still contribute line and
+    # bound-free opacity, but their statistical equilibrium is never solved. This is the
+    # standard active/passive distinction of RH and Lightweaver, and it is what the SNAPI
+    # benchmark run used for hydrogen (its H populations are bit-identical across all 97
+    # iterations while Ca II changes by 264x).
+    is_active: bool = True
     levels: List[Level] = field(default_factory=list)
     lines: List[Line] = field(default_factory=list)
     continua: List[Continuum] = field(default_factory=list)
@@ -384,6 +390,7 @@ class MultiLevelAtom:
             abundance=data['abundance'],
             mass=data['mass'],
             Z=data['Z'],
+            is_active=bool(data.get('is_active', True)),
             levels=[Level.from_dict(l) for l in data.get('levels', [])],
             lines=[Line.from_dict(l) for l in data.get('lines', [])],
             continua=[Continuum.from_dict(c) for c in data.get('continua', [])],
@@ -404,20 +411,35 @@ class MultiLevelAtom:
         if len(temp) != Ndepth:
             raise ValueError("Atmosphere temperature array length mismatch.")
 
-        # Thermal velocity component: sqrt(2kT/m)
+        # Thermal velocity component: sqrt(2kT/m). v_turb may be a scalar or a per-depth
+        # array -- FAL-C's microturbulence runs from 1.8 km/s at the bottom to 6.8 km/s in
+        # the chromosphere, comparable to the thermal width, so a single constant cannot
+        # represent it (see audit/BENCHMARK.md).
+        v_turb_arr = np.asarray(v_turb, dtype=float)
+        if v_turb_arr.ndim == 0:
+            v_turb_arr = np.full(Ndepth, float(v_turb))
+        elif v_turb_arr.size != Ndepth:
+            raise ValueError(f"turbulent_velocity has {v_turb_arr.size} entries, expected {Ndepth}")
         v_thermal = np.sqrt(2.0 * kB_CGS * temp / (m_u_CGS * self.mass))
-        v_doppler = np.sqrt(v_thermal**2 + v_turb**2)
+        v_doppler = np.sqrt(v_thermal**2 + v_turb_arr**2)
 
         for il, line in enumerate(self.lines):
             if line.nu0 > 0:
                 self.doppler_widths[:, il] = (line.nu0 / c_CGS) * v_doppler
+
+VMICRO_CHAR = 3.0e5   # cm/s. RH's VMICRO_CHAR: the fixed characteristic velocity used to
+                      # lay out per-line wavelength grids (getlambda.c). It is NOT the
+                      # atmosphere's microturbulence -- the real profile width still comes
+                      # from atom.doppler_widths. See audit F-018.
+
 
 def create_frequency_grid(atoms: List[MultiLevelAtom], 
                         #   temperature: float,
                         #   v_turb: float = 0.0,
                         #   max_resol_nm: float = 3e-4,
                         #   min_resol_nm: float = 1e1,) -> Tuple[np.ndarray, np.ndarray]:
-                          v_turb: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
+                          v_turb: float = 0.0,
+                          v_micro_char: float = VMICRO_CHAR) -> Tuple[np.ndarray, np.ndarray]:
     """
     Creates a global frequency grid with trapezoidal integration weights.
 
@@ -481,8 +503,13 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
             # for nu in (line.nu0 + x_grid * doppler_width_nu_rep):
             #     frequency_set.add(nu)
 
-            # Lightweaver defines the characteristic line grid velocity as a constant 3 km/s
-            v_micro_char = v_turb # 3.0e5 # cm/s
+            # RH and Lightweaver lay the per-line grid out on a FIXED characteristic
+            # velocity (RH's VMICRO_CHAR = 3 km/s), not on the atmosphere's microturbulence.
+            # An earlier revision of this audit used max(v_turb) here to accommodate a
+            # depth-dependent v_turb; for FAL-C that is 6.75 km/s, which stretches every
+            # window by 2.25x and halves the number of points sampling the line core
+            # (13 vs 25 within +-1 real Doppler width for Ly-alpha). Restored to the RH
+            # convention; override via the v_micro_char argument if needed. See audit F-018.
             doppler_width_lambda = line.lambda0 * (v_micro_char / c_CGS)
             
             # The grid is built symmetric in *wavelength* space, not frequency!
@@ -543,8 +570,170 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
     return nus, weights
 
 
+def compute_line_frequency_weights(atoms: List[MultiLevelAtom],
+                                   frequency_grid: np.ndarray) -> None:
+    """
+    Build per-transition trapezoidal quadrature weights, restricted to each line's own
+    frequency window, and attach them to every Line as `grid_mask` and `freq_weights`.
+
+    Why this is needed
+    ------------------
+    The weights returned by `create_frequency_grid` are a trapezoid rule over the *union*
+    grid: each point's weight straddles half the gap to its global neighbours. Re-using
+    them for a *per-line* integral gives the outermost point of a line's window a weight
+    that spans the empty gap separating this line's frequency block from the next block in
+    the spectrum. That weight can exceed the local grid spacing by three orders of
+    magnitude and then dominates int(phi dnu).
+
+    Measured on the unpatched code for H Br-alpha (4052 nm) at T = 1e5 K: the single
+    window-edge point carried a weight of 2.88e13 Hz against a local spacing of 4.0e9 Hz
+    and contributed 12.22 of the total integral of 13.31 (92%). The subsequent numerical
+    renormalization then deflated the line opacity and J-bar by that factor, and turned
+    J-bar into a weighted average of I dominated by the window edge -- i.e. the local
+    continuum intensity rather than the line radiation field.
+
+    RH (`getlambda.c`) and Lightweaver (`Transition.compute_phi`) both integrate each
+    transition over its own subgrid; this reproduces that behaviour on the shared grid.
+
+    See audit/FINDINGS.md F-002.
+    """
+    for atom in atoms:
+        for line in atom.lines:
+            mask = np.abs(frequency_grid - line.nu0) <= line.max_delta_nu
+            w = np.zeros_like(frequency_grid)
+            nu = frequency_grid[mask]
+            if nu.size >= 3:
+                wl = np.empty(nu.size)
+                wl[0] = 0.5 * (nu[1] - nu[0])
+                wl[-1] = 0.5 * (nu[-1] - nu[-2])
+                wl[1:-1] = 0.5 * (nu[2:] - nu[:-2])
+                w[mask] = wl
+            elif nu.size == 2:
+                w[mask] = 0.5 * (nu[1] - nu[0])
+            elif nu.size == 1:
+                # Degenerate window: nothing to integrate over. Leave a unit weight so the
+                # profile normalization stays finite; such a line is unusable anyway.
+                w[mask] = 1.0
+            line.grid_mask = mask
+            line.freq_weights = w
+
+
+
+def init_line_broadening(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere") -> None:
+    """
+    Precompute the depth-independent broadening constants for every line and attach them to
+    the Line objects (`vdw_cross`, `stark_vrel_factor`, `stark_c23`, `lin_stark_factor`,
+    `barklem_c0/c1`, `mult_stark_coeff`).
+
+    These were previously set as a side effect of running main.py, which meant
+    `formal_solver.get_RT_coefficients` could not be called at all without executing the
+    whole driver script -- the direct reason the RT module had no unit tests (audit F-009).
+    Extracted verbatim; behaviour is unchanged.
+    """
+    for atom in atoms:
+        atom_mass_CGS = atom.mass * m_u_CGS
+        for line in atom.lines:
+            # Defaults for depth-dependent terms
+            line.vdw_cross = 0.0
+            line.stark_vrel_factor = 0.0
+            line.stark_c23 = 0.0
+            line.lin_stark_factor = 0.0
+            line.barklem_c0 = 0.0
+            line.barklem_c1 = 0.0
+            line.mult_stark_coeff = 0.0
+
+            upper_lvl = atom.levels[line.upper_level_index]
+            lower_lvl = atom.levels[line.lower_level_index]
+            current_ion = upper_lvl.ionization
+
+            # Get overarching continuum level for limits
+            cont_level = next((lvl for lvl in atom.levels if lvl.ionization == current_ion + 1), None)
+            E_cont = cont_level.energy if cont_level else atom.levels[-1].energy
+
+            for elastic in line.broadening.elastic:
+                if elastic.get("type") == "VdwUnsold":
+                    '''
+                    Implementation of the Unsold method for van der Waals broadening.
+                    Follows LW and HM2014 pp. 237-238,
+                    '''
+                    vals = elastic.get("vals", [1.0, 1.0])
+                    deltaR = (E_Ryd_erg / (E_cont - upper_lvl.energy))**2 - (E_Ryd_erg / (E_cont - lower_lvl.energy))**2
+                    Z = upper_lvl.ionization + 1
+
+                    C6_CGS = 2.5 * q_e_CGS**2 * alpha_H_CGS * 2.0 * np.pi * (Z * a0_CGS)**2 / h_CGS * abs(deltaR)
+                    C625 = C6_CGS**0.4
+
+                    vRel35H = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_H_CGS))**0.3
+                    vRel35He = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_He_CGS))**0.3
+
+                    line.vdw_cross = 8.08 * (vals[0] * vRel35H + vals[1] * atmosphere.he_abund * vRel35He) * C625
+
+                elif elastic.get("type") == "VdwBarklem":
+                    '''
+                    Implementation of the Barklem method for van der Waals broadening.
+                    '''
+                    vals = elastic.get("vals", [0.0, 0.0])
+                    barklemVals = get_barklem_cross_section(atom, line, vals)
+                    line.barklem_c0 = barklemVals[0]
+                    line.barklem_c1 = barklemVals[1]
+
+                    # Helium contribution (same Unsold cross section as in Lightweaver)
+                    deltaR = (E_Ryd_erg / (E_cont - upper_lvl.energy))**2 - (E_Ryd_erg / (E_cont - lower_lvl.energy))**2
+                    Z = 1 # stage + 1 = 0 + 1 = 1 for neutral atom in VdwBarklem
+                    C6_CGS = 2.5 * q_e_CGS**2 * alpha_H_CGS * 2.0 * np.pi * (Z * a0_CGS)**2 / h_CGS * abs(deltaR)
+                    C625 = C6_CGS**0.4
+                    vRel35He = (8.0 * kB_CGS / (np.pi * atom_mass_CGS) * (1.0 + atom_mass_CGS / m_He_CGS))**0.3
+
+                    line.vdw_cross = 8.08 * atmosphere.he_abund * vRel35He * C625
+
+                elif elastic.get("type") == "MultiplicativeStarkBroadening":
+                    '''
+                    Simple expression for multiplicative Stark broadening, ne * coeff
+                    '''
+                    line.mult_stark_coeff = elastic.get("coeff", 0.0)
+
+                elif elastic.get("type") == "QuadraticStarkBroadening":
+                    '''
+                    Lindholm theory result for Quadratic Stark broadening by electrons and
+                    singly ionised particles.
+                    Follows HM2014 pp. 238-239, uses C4 from Traving 1960 via LW (and previously RH).
+                    '''
+                    coeff = elastic.get("coeff", 1.0)
+                    C_stark = 8.0 * kB_CGS / (np.pi * atom_mass_CGS)
+                    # 28.0 is average atomic weight
+                    Cm = (1.0 + atom_mass_CGS / m_e_CGS)**(1.0/6.0) \
+                        + (1.0 + atom_mass_CGS / (28.0 * m_u_CGS))**(1.0/6.0)
+                    line.stark_vrel_factor = (C_stark)**(1.0/6.0) * Cm
+
+                    E_Ryd_elem = E_Ryd_erg / (1.0 + m_e_CGS / atom_mass_CGS)
+                    Z_i = lower_lvl.ionization + 1
+                    neff_l = Z_i * np.sqrt(E_Ryd_elem / (E_cont - lower_lvl.energy))
+                    neff_u = Z_i * np.sqrt(E_Ryd_elem / (E_cont - upper_lvl.energy))
+
+                    C4 = q_e_CGS**2 \
+                       * a0_CGS \
+                       * (2.0 * np.pi * a0_CGS**2 / h_CGS) / (18.0 * Z_i**4) * \
+                         abs((neff_u * (5.0 * neff_u**2 + 1.0))**2 \
+                             - (neff_l * (5.0 * neff_l**2 + 1.0))**2)
+                    line.stark_c23 = 11.37 * (coeff * C4)**(2.0/3.0)
+
+                elif elastic.get("type") == "HydrogenLinearStarkBroadening":
+                    """ 
+                    Linear Stark broadening for the case of Hydrogen from Sutton 1978 (like LW and RH).
+                    """     
+                    nUpper = np.round(np.sqrt(0.5 * upper_lvl.g))
+                    nLower = np.round(np.sqrt(0.5 * lower_lvl.g))
+                    a1 = 0.642 if nUpper - nLower == 1 else 1.0
+                    cc = a1 * 0.6 * (nUpper**2 - nLower**2)
+                    # Lightweaver's unit (cm-2 translation drops the 10^-4 scalar when taking ne_CGS vs ne_SI)
+                    line.lin_stark_factor = cc * 4.0 * np.pi * 0.425
+
+                else:
+                    raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
+
 def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
-              max_itterations=100, tolerance=1e-5) -> float:
+              max_itterations=100, tolerance=1e-5,
+              fix_electron_density: bool = False) -> float:
     """
     Solves the coupled Statistical Equilibrium and Charge/Particle
     Conservation equations using a decoupled iterative Lambda method.
@@ -595,13 +784,24 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
             old_pops_for_S[atom.name] = atom.populations[k, :].copy()
 
         # --- Local Iteration for (Populations <-> ne) ---
-        for local_iter in range(max_itterations):
+        # With fix_electron_density the electron density is held at the background EOS value
+        # and never updated from the NLTE charge balance. This is SNAPI's convention (and an
+        # option in RH): one pass suffices, since nothing couples back into n_e.
+        n_local = 1 if fix_electron_density else max_itterations
+        for local_iter in range(n_local):
             
             ne_for_rates = ne_current_iter.copy()
             new_total_charge = 0.0
             
             # --- Solve all atom populations with fixed ne ---
             for atom in atoms:
+                if not atom.is_active:
+                    # Held at LTE: contributes opacity and charge, but no SE solve. Its
+                    # charge contribution cancels in delta_charge_total because it equals
+                    # the LTE value by construction.
+                    charges = np.array([l.ionization for l in atom.levels])
+                    new_total_charge += np.sum(atom.populations[k, :] * charges)
+                    continue
                 N_total_k = atom.abundance * nh
                 if N_total_k <= 0:
                     print(f"Warning: Atom {atom.name} has non-positive abundance at depth k={k}. Skipping SE solve for this atom.")
@@ -609,7 +809,8 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
                     
                 # Solve for this atom at this depth, using old_pops for S_old
                 populations_new = solve_atom(atom, k, Tk, ne_for_rates, kT, N_total_k, nh,
-                                             old_pops_k=old_pops_for_S[atom.name])
+                                             old_pops_k=old_pops_for_S[atom.name],
+                                             atmosphere_ne_bg_k=atmosphere.ne_bg[k])
                 
                 # Update atom's population *at this depth*
                 atom.populations[k, :] = populations_new
@@ -617,6 +818,10 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
                 # --- Calculate contribution to charge ---
                 charges = np.array([l.ionization for l in atom.levels])
                 new_total_charge += np.sum(populations_new * charges)
+
+            if fix_electron_density:
+                ne_current_iter = atmosphere.ne_bg[k]
+                break
 
             # --- Calculate new ne and check convergence ---
             # Update ne self-consistently from the NLTE populations.
@@ -648,7 +853,7 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
         # Update the atmosphere's 'ne' with the converged value
         atmosphere.ne[k] = ne_current_iter
         
-        if local_iter == max_itterations - 1:
+        if (not fix_electron_density) and local_iter == max_itterations - 1:
             print(f"Warning: SE local iteration did not converge at depth k={k}")
 
     # --- Calculate max *global* relative change ---
@@ -676,7 +881,8 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
 
 # --- Internal helper function to solve SE for one atom at one depth ---
 def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
-                N_total_k: float, nh: float, old_pops_k: np.ndarray = None) -> np.ndarray:
+                N_total_k: float, nh: float, old_pops_k: np.ndarray = None,
+                atmosphere_ne_bg_k: float = 0.0) -> np.ndarray:
     """
     Solves A*n = b for a single atom at depth k using fixed ne.
     """
@@ -779,10 +985,16 @@ def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
         R_matrix[j, i] += line.Aul * (1.0 - L_star) + line.Bul * J_eff
 
     # --- (Bound-Free) ---
+    # The recombination rate carries the LTE ratio (n_i/n_k)*, which is exactly linear in
+    # n_e (HM2014 eq. 9.10). It was tabulated once, outside the Lambda loop, at ne_bg --
+    # but n_e is updated every iteration (and inside this routine's own local iteration),
+    # while the collisional rates in the same matrix use the current n_e. Rescale so the
+    # whole matrix is evaluated at one consistent electron density (audit F-006).
+    ne_scale = ne / atmosphere_ne_bg_k if atmosphere_ne_bg_k > 0.0 else 1.0
     for i_cont, cont in enumerate(atom.continua):
         i, j = cont.lower_level_index, cont.upper_level_index
         R_matrix[i, j] += atom.photoionization_rates[k, i_cont]
-        R_matrix[j, i] += atom.recombination_rates[k, i_cont]
+        R_matrix[j, i] += atom.recombination_rates[k, i_cont] * ne_scale
 
     total_departure_rate_from_i = np.sum(R_matrix + C_matrix, axis=1)
 

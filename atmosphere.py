@@ -23,7 +23,26 @@ def get_angular_quadrature_1D(n_gauss):
         print(f"Warning: n_gauss={n_gauss} is odd, adding a ray to avoid horizontal ray.")
         n_gauss += 1
 
-    mu, w_gauss = np.polynomial.legendre.leggauss(n_gauss)
+    # Gauss-Legendre *per hemisphere*, as in RH and Lightweaver, rather than a single rule
+    # spanning [-1, 1].
+    #
+    # I(mu) is discontinuous at mu = 0: at the upper boundary there is no incoming
+    # radiation, I(mu<0) = 0, while I(mu>0) is finite. A single Gauss-Legendre rule placed
+    # across that jump converges only as O(1/N), which is exactly what was measured: J-bar
+    # for Ca II changed by 4.5% between the production setting and a 24-ray reference
+    # (audit F-014). Integrating each hemisphere separately puts no node across the
+    # discontinuity.
+    #
+    # Interface is unchanged: n_gauss nodes in total, symmetric about zero, weights summing
+    # to 2, none at mu = 0 -- so `0.5 * w * I` remains exactly (1/2) int_{-1}^{1} I dmu and
+    # the `if ray > 0` direction test stays valid.
+    n_half = max(1, n_gauss // 2)
+    x, w = np.polynomial.legendre.leggauss(n_half)
+    mu_half = 0.5 * (x + 1.0)          # map [-1,1] -> [0,1]
+    w_half = 0.5 * w                   # sum(w_half) = 1 per hemisphere
+
+    mu = np.concatenate([-mu_half[::-1], mu_half])
+    w_gauss = np.concatenate([w_half[::-1], w_half])
 
     return w_gauss, mu
 
@@ -146,7 +165,15 @@ def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.
         # for s in stages_unique:
         #     U_t[s] = partition_function(atom, s, T)
         UI, UII, UIII = get_partition_functions(atom.Z, T)
-        U_t = {0: UI, 1: UII, 2: UIII}
+        if atom.Z == 1:
+            # chemeq's Z=1 triplet is (U(H-), U(H I), U(H II)): hydrogen's stages in the
+            # FIRTEZ tables are H-/H/H+, which is why XI[0] = 0.754 eV is the H- electron
+            # affinity and XII[0] = 13.595 eV the H I ionization potential (see
+            # compute_background_species, which hard-codes U(H I)=2, U(H II)=1 for the same
+            # reason). Shift by one stage so neutral H gets U=2 rather than U(H-)=1.
+            U_t = {0: UII, 1: UIII}
+        else:
+            U_t = {0: UI, 1: UII, 2: UIII}
             
         # Calculate the fractional abundance of each stage relative to the lowest provided stage (s_ref)
         f = {}
