@@ -463,9 +463,22 @@ def add_background_opacity(iz: int,
     # `atoms` is the list of ACTIVE NLTE atoms. Their bound-free transitions are already
     # added by get_RT_coefficients, so they must not also be supplied by the LTE background
     # (audit F-017).
+    #
+    # Build the set of (element, ionization stage) whose bound-free an active atom carries.
+    # The species a continuum represents is the stage of its LOWER level, so this stays
+    # correct for models whose upper level is the next ion's ground state.
+    active_bf = set()
+    for a in atoms:
+        elem = a.name.split("_")[0]
+        for cont in a.continua:
+            active_bf.add((elem, a.levels[cont.lower_level_index].ionization))
+
+    def _bg(species, value):
+        """Background density for `species`, or zero if an active atom already supplies it."""
+        return 0.0 if species in active_bf else value
+
     h_atom = next((a for a in atoms if a.name == "H"), None)
     n_H_bf_active = sum(1 for l in h_atom.levels if l.ionization == 0) if h_atom else 0
-    ca_active = any(a.name.startswith("Ca") for a in atoms)
 
     kappa = np.zeros_like(freq_grid)
     kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2,
@@ -478,14 +491,18 @@ def add_background_opacity(iz: int,
 
     if T < 12000.0:
         kappa += _opac_metals_cool(freq_grid, FREQLG, T, TLOG, TKEV, HTK, STIM,
-                                    sp['n_CI_per_U'][iz], sp['n_MgI_per_U'][iz],
-                                    sp['n_AlI_per_U'][iz], sp['n_SiI_per_U'][iz],
-                                    sp['n_FeI_per_U'][iz])
+                                    _bg(("C",  0), sp['n_CI_per_U'][iz]),
+                                    _bg(("Mg", 0), sp['n_MgI_per_U'][iz]),
+                                    _bg(("Al", 0), sp['n_AlI_per_U'][iz]),
+                                    _bg(("Si", 0), sp['n_SiI_per_U'][iz]),
+                                    _bg(("Fe", 0), sp['n_FeI_per_U'][iz]))
     if T < 30000.0:
         kappa += _opac_metals_luke(freq_grid, FREQLG, T, TLOG, TKEV, STIM,
-                                    sp['n_NI_per_U'][iz], sp['n_OI_per_U'][iz],
-                                    sp['n_MgII_per_U'][iz], sp['n_SiII_per_U'][iz],
-                                    0.0 if ca_active else sp['n_CaII_per_U'][iz])
+                                    _bg(("N",  0), sp['n_NI_per_U'][iz]),
+                                    _bg(("O",  0), sp['n_OI_per_U'][iz]),
+                                    _bg(("Mg", 1), sp['n_MgII_per_U'][iz]),
+                                    _bg(("Si", 1), sp['n_SiII_per_U'][iz]),
+                                    _bg(("Ca", 1), sp['n_CaII_per_U'][iz]))
 
     sigma  = 0.6653e-24 * ne
     sigma += _opac_rayleigh_h(freq_grid, n_H1)
@@ -657,7 +674,15 @@ def _seaton(FREQ0, XSECT, POWER, A, freq):
 
 def _opac_metals_cool(freq, FREQLG, T, TLOG, TKEV, HTK, STIM,
                        n_C1, n_Mg1, n_Al1, n_Si1, n_Fe1):
-    """C I, Mg I, Al I, Si I, Fe I.  Port of wittmann.COOLOP. Active T<12000 K."""
+    """
+    C I, Mg I, Al I, Si I, Fe I.  Port of wittmann.COOLOP. Active T<12000 K.
+
+    Any species that an active NLTE atom already supplies must be passed as 0.0 (audit
+    F-017). Note the Peach/Wittmann cross-sections are totals over ALL levels of the
+    species, so suppressing one drops the contribution of levels the model atom does not
+    carry as well. That is the same trade-off RH and Lightweaver make when an atom is set
+    active, and is preferable to counting the modelled levels twice.
+    """
     out = np.zeros_like(freq)
     # C I
     C1240 = 5.0 * np.exp(-1.264/TKEV); C1444 = np.exp(-2.683/TKEV)
@@ -690,8 +715,8 @@ def _opac_metals_luke(freq, FREQLG, T, TLOG, TKEV, STIM,
     """
     N I, O I, Mg II, Si II, Ca II.  Port of wittmann.LUKEOP. Active T<30000 K.
 
-    Pass n_Ca2 = 0.0 when Ca II is an active NLTE atom, so its bound-free edges are not
-    counted both here and in get_RT_coefficients (audit F-017).
+    Any species that an active NLTE atom already supplies must be passed as 0.0, so its
+    bound-free edges are not counted both here and in get_RT_coefficients (audit F-017).
     """
     out = np.zeros_like(freq)
     # N I

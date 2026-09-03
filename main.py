@@ -9,6 +9,7 @@ from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid, solve_SEE
 from atoms import compute_line_frequency_weights, init_line_broadening, VMICRO_CHAR
+from atoms import validate_ionization_stages
 from atoms import get_barklem_cross_section
 from formal_solver import plank, voigt, formal_solution, get_RT_coefficients, line_profile
 
@@ -81,9 +82,22 @@ print("Loading atomic models...")
 atoms = [MultiLevelAtom.from_dict(config_atom) for config_atom in configuration["atoms"]]
 for _a in atoms:
     print(f"  {_a.name}: {'ACTIVE (NLTE)' if _a.is_active else 'PASSIVE (held at LTE)'}")
+validate_ionization_stages(atoms)
 for atom in atoms:
     atom.populations = compute_lte_populations(atom, atmosphere)
     atom.lte_populations = atom.populations.copy()
+    # Model-completeness check. solve_SEE's conservation row forces sum_i n_i = A_elem n_H,
+    # but the LTE reference sums to less wherever the partition function accounts for levels
+    # the model atom does not carry. Where the two disagree, every departure coefficient is
+    # offset by that ratio and the SEE crams the whole element into the modelled levels.
+    _frac = atom.lte_populations.sum(axis=1) / (atom.abundance * atmosphere.nh)
+    if _frac.min() < 0.9:
+        _k = int(np.argmin(_frac))
+        print(f"  WARNING: {atom.name}: LTE populations account for only "
+              f"{100*_frac.min():.2f}% of the element at T={atmosphere.temp[_k]:.0f} K "
+              f"(z={atmosphere.zgrid[_k]/1e5:.0f} km). The model atom is incomplete there -- "
+              f"missing ionization stages or unmodelled excited levels. Departure "
+              f"coefficients above that height are not meaningful.")
     atom.Js = np.zeros((atmosphere.Ndepth, len(atom.lines)))
     atom.compute_doppler_widths(atmosphere, turbulent_velocity)
 
@@ -413,6 +427,23 @@ print("\n" + "==" * 50)
 print("Computing final formal solution with converged populations (μ=1)...")
 print("==" * 50 + "\n")
 
+# Emergent intensity for every outgoing quadrature ray, plus the vertical mu = 1 ray.
+# The Lambda loop only ever kept the mu = 1 spectrum; the centre-to-limb variation is a
+# direct observable and costs one extra formal solution per ray.
+emergent_rays = {}
+_mu_out = sorted([m for m in rays if m > 0])
+for _mu in _mu_out:
+    _I = bottom_boundary_intensity(frequency_grid, weigths_freq_grid, atoms, atmosphere, _mu)
+    _eO, _aO = get_RT_coefficients(0, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+    for _iz in range(1, atmosphere.Ndepth):
+        _dz = atmosphere.zgrid[_iz] - atmosphere.zgrid[_iz - 1]
+        _eM, _aM = _eO, _aO
+        _eO, _aO = get_RT_coefficients(_iz, frequency_grid, weigths_freq_grid, atoms, atmosphere)
+        _I, _ = formal_solution(_mu, _I, _dz, _eM, _eO, _aM, _aO)
+    emergent_rays[_mu] = _I.copy()
+    print(f"  emergent intensity computed for mu = {_mu:.4f} "
+          f"(theta = {np.rad2deg(np.arccos(_mu)):.1f} deg)")
+
 ray_mu1 = 1.0   # vertically outgoing ray
 # Upward ray: start from the bottom (deepest point), propagate upward
 tau_depth = np.zeros((atmosphere.Ndepth, len(frequency_grid)))
@@ -464,6 +495,10 @@ if configuration.get("save_dir", False):
 
     # Save emergent intensity at mu=1 [n_freq]
     np.save(os.path.join(configuration["save_dir"], "emergent_intensity_mu1.npy"), I_disk_centre)
+    np.save(os.path.join(configuration["save_dir"], "emergent_intensity_mu_values.npy"),
+            np.array(_mu_out))
+    np.save(os.path.join(configuration["save_dir"], "emergent_intensity_rays.npy"),
+            np.array([emergent_rays[m] for m in _mu_out]))
 
     # Save optical depth arrays from the vertical (μ=1) formal solution
     # tau_depth : shape (Ndepth, Nfreq)  – cumulative τ from bottom up to each layer
@@ -506,6 +541,47 @@ if DEBUG:
     plt.tight_layout()
     plt.savefig(os.path.join(configuration["save_dir"], "emergent_spectrum_overview.png"))
     plt.close()
+
+    # ---- Emergent intensity for every outgoing ray (centre-to-limb variation) ----
+    plt.figure(figsize=(12, 6), dpi=110)
+    _cm = plt.cm.viridis(np.linspace(0, 0.9, len(_mu_out)))
+    for _i, _mu in enumerate(_mu_out):
+        plt.plot(wavelength_nm_plot, np.flip(emergent_rays[_mu]), '-', lw=0.6, color=_cm[_i],
+                 label=f"$\\mu$={_mu:.3f} ({np.rad2deg(np.arccos(_mu)):.0f}°)")
+    plt.plot(wavelength_nm_plot, I_plot, 'k--', lw=0.8, label=r"$\mu$=1 (disk centre)")
+    plt.xlabel("Wavelength (nm)")
+    plt.ylabel("Intensity (erg s$^{-1}$ cm$^{-2}$ Hz$^{-1}$ sr$^{-1}$)")
+    plt.title("Emergent intensity per ray")
+    plt.legend(fontsize=8, ncol=2)
+    plt.tight_layout()
+    plt.savefig(os.path.join(configuration["save_dir"], "emergent_intensity_rays.png"))
+    plt.close()
+
+    # Per-line centre-to-limb: profile for every ray, one panel per line
+    for iat, atom in enumerate(atoms):
+        for il, line in enumerate(atom.lines):
+            line_wl_nm = line.lambda0 * 1e7
+            m_wl = (wavelength_nm_plot > line_wl_nm - 0.5) & (wavelength_nm_plot < line_wl_nm + 0.5)
+            if not np.any(m_wl):
+                continue
+            fig, ax = plt.subplots(1, 2, figsize=(13, 5), dpi=110)
+            for _i, _mu in enumerate(_mu_out):
+                _Ir = np.flip(emergent_rays[_mu])
+                ax[0].plot(wavelength_nm_plot[m_wl], _Ir[m_wl], '-', color=_cm[_i], lw=1.2,
+                           label=f"$\\mu$={_mu:.3f}")
+                ax[1].plot(wavelength_nm_plot[m_wl], _Ir[m_wl] / np.max(_Ir[m_wl]), '-',
+                           color=_cm[_i], lw=1.2)
+            ax[0].plot(wavelength_nm_plot[m_wl], I_plot[m_wl], 'k--', lw=1.0, label=r"$\mu$=1")
+            ax[0].set_xlabel("Wavelength (nm)"); ax[0].set_ylabel("Intensity")
+            ax[0].set_title(f"{atom.name} {line_wl_nm:.3f} nm — centre to limb")
+            ax[0].legend(fontsize=7); ax[0].grid(ls=':', alpha=.5)
+            ax[1].set_xlabel("Wavelength (nm)"); ax[1].set_ylabel("I / max(I)")
+            ax[1].set_title("normalised (line shape vs $\\mu$)")
+            ax[1].grid(ls=':', alpha=.5)
+            plt.tight_layout()
+            plt.savefig(os.path.join(configuration["save_dir"],
+                                     f"emergent_rays_{atom.name}_line{il}.png"))
+            plt.close()
 
     # Zoom into each line
     for iat, atom in enumerate(atoms):

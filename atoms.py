@@ -427,6 +427,56 @@ class MultiLevelAtom:
             if line.nu0 > 0:
                 self.doppler_widths[:, il] = (line.nu0 / c_CGS) * v_doppler
 
+def validate_ionization_stages(atoms: List[MultiLevelAtom]) -> None:
+    """
+    Check that each atom's `ionization` labels really are the ionic charge (0 = neutral).
+
+    The code uses `ionization` for three physically distinct things -- the partition-function
+    lookup in compute_lte_populations, the charge sum in solve_SEE, and the effective charge
+    Z = ionization + 1 in the Stark and van der Waals recipes -- so a model that labels its
+    stages 1-based silently produces the wrong partition function, the wrong electron
+    contribution and the wrong broadening. That is exactly the class of error F-001 was.
+
+    The labelling is checked against physics, not convention: the energy separating the
+    model's highest stage from its lowest must equal the ionization potential of the lowest
+    stage, which chemeq tabulates. Hydrogen is special-cased because chemeq's Z=1 row is the
+    (H-, H I, H II) triplet, so a neutral H model matches XII rather than XI.
+
+    Warns rather than raises: a mislabelled model still runs, just wrongly, and stopping a
+    long synthesis outright is worse than telling the user loudly.
+    """
+    from chemeq import XI, XII
+
+    for atom in atoms:
+        stages = sorted({lvl.ionization for lvl in atom.levels})
+        if len(stages) < 2:
+            continue
+        lo, hi = stages[0], stages[-1]
+        e_ground = min(l.energy for l in atom.levels if l.ionization == lo)
+        e_head = min(l.energy for l in atom.levels if l.ionization == hi)
+        chi_eV = (e_head - e_ground) / eV_CGS
+
+        xi, xii = XI[atom.Z - 1], XII[atom.Z - 1]
+        if atom.Z == 1:
+            expected = 0 if abs(chi_eV - xii) / xii < 0.02 else None
+        elif abs(chi_eV - xi) / xi < 0.02:
+            expected = 0
+        elif abs(chi_eV - xii) / xii < 0.02:
+            expected = 1
+        else:
+            expected = None
+
+        if expected is None:
+            print(f"WARNING: {atom.name}: ionization energy {chi_eV:.4f} eV matches neither "
+                  f"XI ({xi:.3f}) nor XII ({xii:.3f}) for Z={atom.Z}; cannot verify the "
+                  f"ionization stage labelling.")
+        elif expected != lo:
+            print(f"WARNING: {atom.name}: levels are labelled ionization={lo} but the "
+                  f"ionization energy {chi_eV:.4f} eV identifies the modelled stage as "
+                  f"ionization={expected}. Partition functions, the electron charge sum and "
+                  f"the broadening effective charge will all be wrong. Relabel the levels.")
+
+
 VMICRO_CHAR = 3.0e5   # cm/s. RH's VMICRO_CHAR: the fixed characteristic velocity used to
                       # lay out per-line wavelength grids (getlambda.c). It is NOT the
                       # atmosphere's microturbulence -- the real profile width still comes
