@@ -601,12 +601,23 @@ def _opac_he1(freq, FREQLG, T, TLOG, TKEV, EHVKT, STIM, ne, n_He1, n_He2):
                     81.35 - 3.5*FREQLG,  12.69 - 1.54*FREQLG,
                     23.85 - 1.86*FREQLG, 49.30 - 2.60*FREQLG,
                     85.20 - 3.69*FREQLG, 58.81 - 2.89*FREQLG])
-    TRANS = np.zeros_like(dum)
-    for nmin_idx in range(10):
-        if np.any(freq >= _HE1_FREQ0[nmin_idx]):
-            above = freq >= _HE1_FREQ0[nmin_idx]
-            TRANS[nmin_idx:, above] = np.exp(np.clip(dum[nmin_idx:, above], -300.0, 300.0))
-            break
+    # Kurucz/Wittmann HE1OP selects, for EACH photon, the LOWEST level index whose edge
+    # frequency the photon exceeds, then populates TRANS from that level upward:
+    #     DO NMIN=1,10 ; IF (FREQ .GE. HE1FREQ0(NMIN)) GO TO 11 ; ...
+    #     11 DO N=NMIN,10 ; TRANS(N)=EXP(DUM(N))
+    # That choice is per frequency, and _HE1_FREQ0 is NOT monotonic (entry 7 = 8.32e14 sits
+    # above entries 5, 6), so it cannot be hoisted out of the frequency loop.
+    #
+    # This previously broke out of the loop at the first nmin_idx for which ANY grid point
+    # qualified -- always nmin_idx = 0, since the grid reaches beyond the 5.945e15 Hz edge --
+    # and then applied TRANS only where that same condition held. The result was He I
+    # bound-free evaluated at 15 of 1619 grid points and silently dropped at the other 1310,
+    # spanning 51.6-825.4 nm. Found by the Fortran port (nlte_standalone/PARITY.md).
+    nmin = np.full(freq.shape, 10, dtype=int)
+    for j in range(9, -1, -1):
+        nmin = np.where(freq >= _HE1_FREQ0[j], j, nmin)
+    TRANS = np.where(np.arange(10)[:, np.newaxis] >= nmin[np.newaxis, :],
+                     np.exp(np.clip(dum, -300.0, 300.0)), 0.0)
     GAUNT = _coulff_vec(TLOG, FREQLG, NZ=1)
     HE1 = ((EX - EXLIM)*C + np.sum(TRANS*BOLT, axis=0)
            + GAUNT*FREET*CFREE) * STIM

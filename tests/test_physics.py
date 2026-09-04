@@ -879,9 +879,9 @@ def test_K2_frequency_grid_refinement_converges_second_order():
 # Cross-validation against Lightweaver (the reference implementation)
 # ===========================================================================
 
-lightweaver = pytest.importorskip("lightweaver", reason="Lightweaver not installed")
-
-
+# Scoped to the one test that needs it. At module level, `importorskip` skips the WHOLE
+# module, so with Lightweaver absent the 45 analytic tests below silently did not run --
+# the suite reported "1 skipped" and looked green.
 def test_broadening_matches_lightweaver(model):
     """
     Compare the total damping rate Gamma for every line against Lightweaver's own
@@ -891,10 +891,13 @@ def test_broadening_matches_lightweaver(model):
     natural width together, against the reference implementation -- not just a
     dimensional argument.
 
+    Requires Lightweaver; skipped when it is not installed.
+
     Ca II tolerance is 1%: the config's Grad (1.48-1.50e8) differs from the value implied
     by its own f-values and from Lightweaver's atom file (1.55-1.58e8) by ~4.5%, which is
     audit finding F-010. That shifts the total by ~0.4%.
     """
+    lightweaver = pytest.importorskip("lightweaver", reason="Lightweaver not installed")
     from lightweaver.rh_atoms import H_6_atom, CaII_atom
 
     atoms, atm = model["atoms"], model["atmosphere"]
