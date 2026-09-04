@@ -268,8 +268,14 @@ def test_C_detailed_balance(model):
     _build_lte_rates(model)
     ne_before = atm.ne.copy()
     reference = {a.name: a.lte_populations.copy() for a in atoms}
-    solve_SEE(atoms, atm)
+    solve_SEE(atoms, atm, electron_mode="delta")
 
+    # The F-006 invariant is exact only in "delta" mode, where n_e = n_e,bg + the atoms'
+    # departure from their own LTE charge: in detailed balance that departure is zero.
+    # In "nlte" mode n_e is rebuilt from scratch and legitimately lands elsewhere, because
+    # the model atoms carry different abundances from the chemeq EOS table (Mg +17%,
+    # Na -9%, Ca -7% for this configuration) and only two ionization stages. That is a data
+    # inconsistency, surfaced by atoms.validate_abundances, not a solver error.
     assert np.max(np.abs(atm.ne / ne_before - 1.0)) < 1e-3, \
         "n_e must not drift when the radiation field is already in detailed balance (F-006)"
 

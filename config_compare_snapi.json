@@ -2421,5 +2421,6 @@
       669317.1,
       675315.0
     ]
-  }
+  },
+  "electron_density_mode": "nlte"
 }

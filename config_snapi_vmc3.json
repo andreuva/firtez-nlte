@@ -2424,5 +2424,5 @@
       675315.0
     ]
   },
-  "fix_electron_density": true
+  "electron_density_mode": "eos"
 }

@@ -3,6 +3,7 @@ from typing import List, Tuple, Dict, Any, TYPE_CHECKING
 import numpy as np
 from constants import *
 from debug_functions import print_eq_system
+from chemeq import passive_electron_density
 import atomic_data
 
 from scipy.interpolate import RectBivariateSpline
@@ -427,6 +428,32 @@ class MultiLevelAtom:
             if line.nu0 > 0:
                 self.doppler_widths[:, il] = (line.nu0 / c_CGS) * v_doppler
 
+def validate_abundances(atoms: List[MultiLevelAtom]) -> None:
+    """
+    Warn where a model atom's abundance disagrees with the chemeq ABUND table.
+
+    Two abundance sets are in play: each model atom's own, which sets N_total in the
+    statistical equilibrium, and chemeq's ABUND, which drives the background equation of
+    state and the background opacity species. With electron_density_mode="delta" the
+    disagreement cancels, because only the atom's DEPARTURE from its own LTE charge is
+    applied on top of n_e,bg. With "nlte" it does not: the model atom replaces the EOS's
+    contribution for that element outright, so an abundance mismatch shifts n_e directly.
+    """
+    from chemeq import ABUND
+
+    for atom in atoms:
+        eos = 10.0 ** (ABUND[atom.Z - 1] - 12.0)
+        if eos <= 0.0:
+            continue
+        ratio = atom.abundance / eos
+        if abs(ratio - 1.0) > 0.02:
+            print(f"WARNING: {atom.name}: abundance {atom.abundance:.4e} differs from the "
+                  f"chemeq EOS table value {eos:.4e} by {100*(ratio-1):+.1f}%. The two are "
+                  f"used for different things (SE particle conservation vs the background "
+                  f"EOS and opacities); with electron_density_mode='nlte' the difference "
+                  f"biases n_e.")
+
+
 def validate_ionization_stages(atoms: List[MultiLevelAtom]) -> None:
     """
     Check that each atom's `ionization` labels really are the ionic charge (0 = neutral).
@@ -781,9 +808,12 @@ def init_line_broadening(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere") 
                 else:
                     raise NotImplementedError(f"Elastic broadening type {elastic.get('type')} not implemented.")
 
+ELECTRON_MODES = ("eos", "delta", "nlte")
+
+
 def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
               max_itterations=100, tolerance=1e-5,
-              fix_electron_density: bool = False) -> float:
+              electron_mode: str = "nlte") -> float:
     """
     Solves the coupled Statistical Equilibrium and Charge/Particle
     Conservation equations using a decoupled iterative Lambda method.
@@ -797,10 +827,29 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
         atoms: A list of MultiLevelAtom objects.
         atmosphere: The Atmosphere object containing T, P, ne, nh...
 
+    Electron density treatment, selected by `electron_mode`:
+
+      "eos"    n_e is held at the background LTE equation-of-state value and never updated.
+               This is SNAPI's convention and RH's conserveCharge=False.
+
+      "delta"  n_e = n_e,bg + (charge of the active atoms now - their charge in LTE).
+               The historical behaviour. It is charge conservation, but ANCHORED to the
+               background: the electrons donated by everything that is not an active atom
+               stay frozen at their LTE value at n_e,bg and never respond to n_e moving.
+
+      "nlte"   Full charge conservation. The active atoms donate from their NLTE populations
+               and every other element is re-evaluated from Saha AT THE CURRENT n_e, so the
+               passive donors track the solution instead of being frozen. n_H is held fixed,
+               as RH does with conserveCharge=True; the pressure-balance feedback of n_e on
+               n_H is not followed.
+
     Returns:
         The maximum relative change in the state vector (populations + ne)
         from the *start* of the call.
     """
+    if electron_mode not in ELECTRON_MODES:
+        raise ValueError(f"electron_mode must be one of {ELECTRON_MODES}, got {electron_mode!r}")
+    active_Z = {atom.Z for atom in atoms}
 
     # Store old state for final convergence check
     old_ne = atmosphere.ne.copy()
@@ -834,10 +883,9 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
             old_pops_for_S[atom.name] = atom.populations[k, :].copy()
 
         # --- Local Iteration for (Populations <-> ne) ---
-        # With fix_electron_density the electron density is held at the background EOS value
-        # and never updated from the NLTE charge balance. This is SNAPI's convention (and an
-        # option in RH): one pass suffices, since nothing couples back into n_e.
-        n_local = 1 if fix_electron_density else max_itterations
+        # In "eos" mode the electron density is held at the background EOS value and never
+        # updated, so one pass suffices -- nothing couples back into n_e.
+        n_local = 1 if electron_mode == "eos" else max_itterations
         for local_iter in range(n_local):
             
             ne_for_rates = ne_current_iter.copy()
@@ -869,7 +917,7 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
                 charges = np.array([l.ionization for l in atom.levels])
                 new_total_charge += np.sum(populations_new * charges)
 
-            if fix_electron_density:
+            if electron_mode == "eos":
                 ne_current_iter = atmosphere.ne_bg[k]
                 break
 
@@ -877,8 +925,14 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
             # Update ne self-consistently from the NLTE populations.
             # The delta-charge correction finds the total change in ionization
             # relative to the LTE background state and adds it on top.
-            delta_charge_total = new_total_charge - lte_total_charge
-            ne_target = atmosphere.ne_bg[k] + delta_charge_total
+            if electron_mode == "nlte":
+                # Full charge conservation: active atoms donate from their NLTE populations,
+                # every other element from Saha re-evaluated at the CURRENT n_e.
+                ne_target = new_total_charge + passive_electron_density(
+                    Tk, nh, ne_current_iter, exclude_Z=active_Z)
+            else:
+                delta_charge_total = new_total_charge - lte_total_charge
+                ne_target = atmosphere.ne_bg[k] + delta_charge_total
 
             # FIX: Prevent catastrophic cancellation from wiping out trace metal electrons.
             # Metals (Fe, Si, Mg) ensure ne never drops below ~1e-6 of the total Hydrogen density.
@@ -903,7 +957,7 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
         # Update the atmosphere's 'ne' with the converged value
         atmosphere.ne[k] = ne_current_iter
         
-        if (not fix_electron_density) and local_iter == max_itterations - 1:
+        if electron_mode != "eos" and local_iter == max_itterations - 1:
             print(f"Warning: SE local iteration did not converge at depth k={k}")
 
     # --- Calculate max *global* relative change ---

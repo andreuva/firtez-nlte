@@ -9,7 +9,7 @@ from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid, solve_SEE
 from atoms import compute_line_frequency_weights, init_line_broadening, VMICRO_CHAR
-from atoms import validate_ionization_stages
+from atoms import validate_ionization_stages, validate_abundances
 from atoms import get_barklem_cross_section
 from formal_solver import plank, voigt, formal_solution, get_RT_coefficients, line_profile
 
@@ -40,9 +40,19 @@ def _as_bool(value, default=False):
 
 
 DEBUG = _as_bool(configuration.get("debug", False))
-# Hold n_e at the background EOS value instead of updating it from the NLTE charge balance.
-# SNAPI fixes the electrons to their initial values, so matching it requires this.
-FIX_NE = _as_bool(configuration.get("fix_electron_density", False))
+# Electron density treatment. See solve_SEE's docstring for the three modes:
+#   "eos"   hold n_e at the background LTE equation-of-state value
+#   "delta" n_e = n_e,bg + delta-charge of the active atoms; charge conservation, but
+#           anchored to the background, whose donors stay frozen at n_e,bg
+#   "nlte"  full charge conservation: active atoms donate from their NLTE populations and
+#           every other element is re-evaluated from Saha at the current n_e
+ELECTRON_MODE = str(configuration.get("electron_density_mode", "nlte")).lower()
+if ELECTRON_MODE not in ("eos", "delta", "nlte"):
+    raise ValueError(f"electron_density_mode must be 'eos', 'delta' or 'nlte'; got {ELECTRON_MODE!r}")
+print(f"Electron density mode: {ELECTRON_MODE}"
+      + {"eos":   "  (held at the background EOS value)",
+         "delta": "  (n_e,bg + active-atom delta-charge; passive donors frozen)",
+         "nlte":  "  (full charge conservation; passive donors re-evaluated at the current n_e)"}[ELECTRON_MODE])
 
 # Add a timestamp or unique identifier to the output directory to avoid overwriting previous runs
 if configuration.get("save_dir", False):
@@ -83,6 +93,7 @@ atoms = [MultiLevelAtom.from_dict(config_atom) for config_atom in configuration[
 for _a in atoms:
     print(f"  {_a.name}: {'ACTIVE (NLTE)' if _a.is_active else 'PASSIVE (held at LTE)'}")
 validate_ionization_stages(atoms)
+validate_abundances(atoms)
 for atom in atoms:
     atom.populations = compute_lte_populations(atom, atmosphere)
     atom.lte_populations = atom.populations.copy()
@@ -295,7 +306,7 @@ for itteration in range(configuration["max_itterations"]):
                 atom.recombination_rates[iz, i_cont] = R_ki
 
     max_relative_change = solve_SEE(atoms, atmosphere,
-                                    fix_electron_density=FIX_NE)
+                                    electron_mode=ELECTRON_MODE)
     print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
     for atom in atoms:
         print(f"  {atom.name} max Lambda_star_bar: {np.max(atom.Lambda_star_bar)}")
@@ -304,7 +315,7 @@ for itteration in range(configuration["max_itterations"]):
     # =========================================================================
     # ITERATION-BY-ITERATION DEBUG PLOTS
     # =========================================================================
-    if configuration.get("save_dir", False):
+    if configuration.get("save_dir", False) and DEBUG:
         wavelength_nm_plot = (c_CGS / frequency_grid) * 1e7
 
         # 1. Population Plot (NLTE vs LTE)
@@ -527,7 +538,7 @@ if configuration.get("save_dir", False):
             np.save(os.path.join(configuration["save_dir"], f"R_matrix_{atom.name}.npy"), atom.R_matrix_all)
             np.save(os.path.join(configuration["save_dir"], f"C_matrix_{atom.name}.npy"), atom.C_matrix_all)
 
-if DEBUG:
+if True:
     # Disk-centre emergent spectrum (μ=1 ray)
     wavelength_nm_plot = np.flip(wavelength_grid_nm_final)
     I_plot = np.flip(I_disk_centre)

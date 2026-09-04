@@ -1,6 +1,8 @@
 import numpy as np
 from constants import *
-from atoms import MultiLevelAtom
+# NOTE: `from atoms import MultiLevelAtom` was removed here. Its only reference is the
+# commented-out partition_function() at the bottom of this file, and it created an
+# atoms <-> chemeq import cycle once atoms started using passive_electron_density.
 
 # =====================================================================
 # ATOMIC DATABASE
@@ -466,9 +468,14 @@ def compute_background_eos(temp_array: np.ndarray, pg_array: np.ndarray) -> tupl
             n_II = nt / (ne_new * alpha1 + 1.0 + (1.0 / (ne_new * alpha2)))
             n_III = nt / (1.0 + ne_new * alpha2 * (ne_new * alpha1 + 1.0))
             
-            # Sum electrons (H- is index 0)
+            # Sum electrons. Index 0 is hydrogen, whose triplet here is (H-, H I, H II):
+            # protons donate one electron each and H- consumes one.
             ne_est = n_III[0] - n_I[0]
-            ne_est += np.sum(n_II[1:]) + np.sum(n_III[1:])
+            # For every other element the triplet is (neutral, singly, doubly ionised), so a
+            # doubly ionised atom donates TWO electrons. This previously read
+            # `n_II[1:] + n_III[1:]`, counting it as one. Negligible in the photosphere but
+            # 9.2% at 1e5 K, where doubly ionised metals matter.
+            ne_est += np.sum(n_II[1:]) + 2.0 * np.sum(n_III[1:])
             
             ne_new = (max(ne_est, 0.0) + ne_old) / 2.0
             error = abs((ne_new - ne_old) / ne_new) if ne_new > 0 else 0.0
@@ -481,6 +488,54 @@ def compute_background_eos(temp_array: np.ndarray, pg_array: np.ndarray) -> tupl
         nh_out[k] = nh
         
     return ne_out, nh_out
+
+
+def passive_electron_density(T: float, nh: float, ne: float,
+                             exclude_Z=()) -> float:
+    """
+    Electrons donated by every element EXCEPT those in `exclude_Z`, from the Saha
+    equilibrium evaluated at the supplied electron density.
+
+    This is what a full-NLTE charge conservation needs: the active atoms supply their own
+    electrons from their NLTE populations, and everything else is still an LTE donor but must
+    respond to the current n_e rather than staying frozen at the background value.
+
+    Parameters
+    ----------
+    T   : temperature [K]
+    nh  : total hydrogen nucleus density [cm^-3] (held fixed, as RH does with conserveCharge)
+    ne  : electron density at which to evaluate the Saha equilibrium [cm^-3]
+    exclude_Z : atomic numbers handled explicitly by active NLTE atoms
+
+    Notes
+    -----
+    For Z = 1 the chemeq tables are the (H-, H I, H II) triplet, so the donor term is
+    n(H II) - n(H-): protons donate, H- consumes.
+    """
+    CSAHA1 = (h_CGS**2 / (2.0 * np.pi * m_e_CGS * kB_CGS))**1.5
+    CSAHA2 = eV_CGS / kB_CGS
+    lamelec = CSAHA1 * T**(-1.5)
+    ne = max(ne, 1.0e-30)
+    exclude = set(exclude_Z)
+
+    total = 0.0
+    for i in range(NELEM):
+        Z = i + 1
+        if Z in exclude:
+            continue
+        UI, UII, UIII = get_partition_functions(Z, T)
+        a1 = (UI / (2.0 * UII)) * lamelec * np.exp(np.clip(CSAHA2 * XI[i] / T, -650.0, 650.0))
+        a2 = (UII / (2.0 * UIII)) * lamelec * np.exp(np.clip(CSAHA2 * XII[i] / T, -650.0, 650.0))
+        nt = nh * 10.0**(ABUND[i] - 12.0)
+        ne_a1, ne_a2 = ne * a1, ne * a2
+        n_I = nt / (1.0 + (1.0 / ne_a1) * (1.0 + 1.0 / ne_a2))
+        n_II = nt / (ne_a1 + 1.0 + 1.0 / ne_a2)
+        n_III = nt / (1.0 + ne_a2 * (ne_a1 + 1.0))
+        if Z == 1:
+            total += n_III - n_I
+        else:
+            total += n_II + 2.0 * n_III
+    return total
 
 
 # =====================================================================

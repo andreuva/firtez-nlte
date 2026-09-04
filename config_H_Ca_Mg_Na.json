@@ -1,13 +1,13 @@
 {
-  "debug": "True",
-  "save_dir": "outputs_H_Ca_Mg_Na",
+  "debug": "False",
+  "save_dir": "outputs_H_Ca_Mg_Na_nlte_ne",
   "new_dir": true,
   "quadrature": {
     "n_gaus": 5
   },
   "max_wavelength_resolution_nm": 0.0005,
   "min_wavelength_resolution_nm": 25,
-  "max_itterations": 60,
+  "max_itterations": 300,
   "max_tolerance": 0.001,
   "atoms": [
     {
@@ -4144,5 +4144,6 @@
       0.17215369098060918,
       0.17284220572589998
     ]
-  }
+  },
+  "electron_density_mode": "nlte"
 }
