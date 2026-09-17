@@ -102,101 +102,69 @@ class Atmosphere:
         print("Computing background opacity species populations...")
         self.bg_species = compute_background_species(self.temp, self.pg, self.ne_bg, self.nh)
 
-def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.ndarray:
-    """
-    Calculates LTE level populations for a multi-level atom using the Saha-Boltzmann 
-    equations and Irwin partition functions to account for un-modeled higher states.
-
-    Args:
-        atom (MultiLevelAtom): The atomic model object.
-        atmosphere (AtmosphereParams): A class containing atmospheric data.
-
-    Returns:
-        np.ndarray: A 2D array of shape (num_points, num_levels) containing
-                    the population of each level at each atmospheric point.
-    """
-
+def compute_lte_population_at_ne(atom: MultiLevelAtom, T: float, ne: float,
+                                 nh: float) -> np.ndarray:
+    """Saha-Boltzmann populations at one depth and a supplied electron density."""
     levels = atom.levels
     num_levels = len(levels)
     energies = np.array([l.energy for l in levels])     # In ergs
     gs = np.array([l.g for l in levels])                # Statistical weights
     stages = np.array([l.ionization for l in levels])   # Ionization stage (e.g., 1 for neutral, 2 for singly ionized)
+    populations = np.zeros(num_levels)
+    if T <= 0.0 or ne <= 0.0 or nh <= 0.0:
+        return populations
 
-    num_points = len(atmosphere.zgrid)
-
-    # The Saha constant is (2 * pi * m_e * k_B / h^2)^1.5
-    saha_const = ((2.0 * np.pi * m_e_CGS * kB_CGS) / (h_CGS**2))**1.5
-
-    # Initialize the output array for populations
-    populations = np.zeros((num_points, num_levels))
-    
-    # Find unique ionizations and their ground state energies
-    stages_unique = np.unique(stages)
+    # Only stages represented by explicit levels belong to this model atom. An absent
+    # stage (for example Mg III in the supplied Mg I/Mg II atom) is not assigned an
+    # artificial ground state and does not enter this model's Saha normalization.
+    modeled_stages = np.unique(stages)
     E_ground = {}
-    for s in stages_unique:
-        # The ground state energy of a ion is the minimum energy among its provided levels
+    for s in modeled_stages:
+        # The ground state energy of an ion is the minimum among its provided levels.
         E_ground[s] = np.min(energies[stages == s])
         
-    s_ref = np.min(stages_unique)
+    s_ref = np.min(modeled_stages)
     E_ref = E_ground[s_ref]
-    
-    # Loop through each point in the atmosphere
-    for k in range(num_points):
-        T = atmosphere.temp[k]
-        if T <= 0.0:
+
+    kT = kB_CGS * T
+    N_total = atom.abundance * nh
+    saha_const = ((2.0 * np.pi * m_e_CGS * kB_CGS) / (h_CGS**2))**1.5
+    Phi = (2.0 / ne) * saha_const * (T ** 1.5)
+
+    UI, UII, UIII = get_partition_functions(atom.Z, T)
+    if atom.Z == 1:
+        # chemeq's Z=1 triplet is (U(H-), U(H I), U(H II)). Shift by one stage
+        # so neutral H gets U(H I)=2 rather than U(H-)=1.
+        U_t = {0: UII, 1: UIII}
+    else:
+        U_t = {0: UI, 1: UII, 2: UIII}
+
+    f = {}
+    for s in modeled_stages:
+        dE = E_ground[s] - E_ref
+        f[s] = (U_t[s] / U_t[s_ref]) * (Phi ** (s - s_ref)) * np.exp(-dE / kT)
+
+    N_ref = N_total / sum(f.values())
+    N_stage = {s: N_ref * f[s] for s in modeled_stages}
+
+    for i in range(num_levels):
+        s = stages[i]
+        E_level_rel = energies[i] - E_ground[s]
+        populations[i] = N_stage[s] * (gs[i] / U_t[s]) * np.exp(-E_level_rel / kT)
+
+    return populations
+
+
+def compute_lte_populations(atom: MultiLevelAtom, atmosphere: Atmosphere) -> np.ndarray:
+    """Calculate initial LTE populations on the atmosphere's background EOS state."""
+    populations = np.zeros((len(atmosphere.zgrid), len(atom.levels)))
+    for k in range(len(atmosphere.zgrid)):
+        if atmosphere.temp[k] <= 0.0:
             print(f"WARNING: Negative Temperature in lte populations at iz={k}. Skipping.")
             continue
-
-        ne = atmosphere.ne_bg[k]
-        if ne <= 0.0:
+        if atmosphere.ne_bg[k] <= 0.0:
             print(f"WARNING: Negative Electron Density in lte populations at iz={k}. Skipping.")
             continue
-            
-        kT = kB_CGS * T
-        
-        # Total number density for this element at depth k
-        N_total = atom.abundance * atmosphere.nh[k]
-        
-        # Saha factor: (2 / N_e) * (2 * pi * m_e * k_B * T / h^2)^1.5
-        Phi = (2.0 / ne) * saha_const * (T ** 1.5)
-        
-        # Calculate Irwin partition functions for each stage at temperature T
-        # U_t = {}
-        # for s in stages_unique:
-        #     U_t[s] = partition_function(atom, s, T)
-        UI, UII, UIII = get_partition_functions(atom.Z, T)
-        if atom.Z == 1:
-            # chemeq's Z=1 triplet is (U(H-), U(H I), U(H II)): hydrogen's stages in the
-            # FIRTEZ tables are H-/H/H+, which is why XI[0] = 0.754 eV is the H- electron
-            # affinity and XII[0] = 13.595 eV the H I ionization potential (see
-            # compute_background_species, which hard-codes U(H I)=2, U(H II)=1 for the same
-            # reason). Shift by one stage so neutral H gets U=2 rather than U(H-)=1.
-            U_t = {0: UII, 1: UIII}
-        else:
-            U_t = {0: UI, 1: UII, 2: UIII}
-            
-        # Calculate the fractional abundance of each stage relative to the lowest provided stage (s_ref)
-        f = {}
-        for s in stages_unique:
-            dE = E_ground[s] - E_ref
-            # N_s / N_ref = (U_t / U_t_ref) * Phi^(s - s_ref) * exp(-dE / kT)
-            f[s] = (U_t[s] / U_t[s_ref]) * (Phi ** (s - s_ref)) * np.exp(-dE / kT)
-            
-        sum_f = sum(f.values())
-        
-        # Total absolute population of the reference stage
-        N_ref = N_total / sum_f
-        
-        # Total absolute population of each stage
-        N_stage = {s: N_ref * f[s] for s in stages_unique}
-        
-        # Calculate the LTE population for each individual level (Boltzmann equation)
-        for i in range(num_levels):
-            s = stages[i]
-            # Level energy relative strictly to its own stage's ground state
-            E_level_rel = energies[i] - E_ground[s]
-            
-            # n_i = N_stage * (g_i / U_t) * exp(-E_rel / kT)
-            populations[k, i] = N_stage[s] * (gs[i] / U_t[s]) * np.exp(-E_level_rel / kT)
-        
+        populations[k, :] = compute_lte_population_at_ne(
+            atom, atmosphere.temp[k], atmosphere.ne_bg[k], atmosphere.nh[k])
     return populations

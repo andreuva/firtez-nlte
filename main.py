@@ -8,8 +8,9 @@ from matplotlib import pyplot as plt
 from constants import *
 from atmosphere import Atmosphere, get_angular_quadrature_1D, compute_lte_populations
 from atoms import MultiLevelAtom, create_frequency_grid, solve_SEE
-from atoms import compute_line_frequency_weights, init_line_broadening, VMICRO_CHAR
-from atoms import validate_ionization_stages, validate_abundances
+from atoms import (compute_line_frequency_weights, continuum_frequency_weights,
+                   init_line_broadening, VMICRO_FLOOR)
+from atoms import validate_ionization_stages, reconcile_abundances
 from atoms import get_barklem_cross_section
 from formal_solver import plank, voigt, formal_solution, get_RT_coefficients, line_profile
 
@@ -93,31 +94,28 @@ atoms = [MultiLevelAtom.from_dict(config_atom) for config_atom in configuration[
 for _a in atoms:
     print(f"  {_a.name}: {'ACTIVE (NLTE)' if _a.is_active else 'PASSIVE (held at LTE)'}")
 validate_ionization_stages(atoms)
-validate_abundances(atoms)
+reconcile_abundances(atoms)
 for atom in atoms:
     atom.populations = compute_lte_populations(atom, atmosphere)
     atom.lte_populations = atom.populations.copy()
-    # Model-completeness check. solve_SEE's conservation row forces sum_i n_i = A_elem n_H,
-    # but the LTE reference sums to less wherever the partition function accounts for levels
-    # the model atom does not carry. Where the two disagree, every departure coefficient is
-    # offset by that ratio and the SEE crams the whole element into the modelled levels.
+    # Model-completeness check. The SNAPI-style conservation row retains this explicit LTE
+    # population instead of filling the model levels with the whole element. The remainder
+    # stays in the LTE EOS reservoir and has no explicit NLTE transitions.
     _frac = atom.lte_populations.sum(axis=1) / (atom.abundance * atmosphere.nh)
     if _frac.min() < 0.9:
         _k = int(np.argmin(_frac))
         print(f"  WARNING: {atom.name}: LTE populations account for only "
               f"{100*_frac.min():.2f}% of the element at T={atmosphere.temp[_k]:.0f} K "
               f"(z={atmosphere.zgrid[_k]/1e5:.0f} km). The model atom is incomplete there -- "
-              f"missing ionization stages or unmodelled excited levels. Departure "
-              f"coefficients above that height are not meaningful.")
+              f"missing ionization stages or unmodelled excited levels remain in the LTE "
+              f"EOS reservoir and cannot participate in explicit NLTE transitions.")
     atom.Js = np.zeros((atmosphere.Ndepth, len(atom.lines)))
     atom.compute_doppler_widths(atmosphere, turbulent_velocity)
 
 print("Creating frequency grid...")
 frequency_grid, weigths_freq_grid = create_frequency_grid(atoms,
-                                                        #   temperature=5700,
+                                                          atmosphere=atmosphere,
                                                           v_turb=turbulent_velocity,
-                                                          v_micro_char=float(configuration.get(
-                                                              "line_grid_vmicro_char", VMICRO_CHAR)),
                                                         #   max_resol_nm=configuration["max_wavelength_resolution_nm"],
                                                         #   min_resol_nm=configuration["min_wavelength_resolution_nm"]
                                                           )
@@ -184,6 +182,11 @@ def bottom_boundary_intensity(freq_grid, freq_weights, atoms, atmosphere, mu):
 
 # #################################################################################
 # LAMBDA ITTERATIONS
+converged = False
+prev_change = 0.0
+rho = 0.0
+solver_failed = False
+max_relative_change = np.inf
 for itteration in range(configuration["max_itterations"]):
 
     print('--'*50)
@@ -288,26 +291,31 @@ for itteration in range(configuration["max_itterations"]):
         for atom in atoms:
             for i_cont, cont in enumerate(atom.continua):
                 alphas = atom.photoionization_alphas[i_cont, :]
-                active_idx = alphas > 0
-                if not np.any(active_idx): continue
+                active_idx, continuum_weights = continuum_frequency_weights(
+                    alphas, frequency_grid, weigths_freq_grid)
+                if active_idx.size == 0: continue
                 
                 # Spontaneous + Stimulated (using mean intensity)
                 stim_spont_term = (2.0 * hnu3_grid[active_idx] / c_CGS**2 + J_grid[iz, active_idx]) \
-                                * np.exp(-hnu_grid[active_idx] / (kB_CGS * atmosphere.temp[iz]))
+                                  * np.exp(-hnu_grid[active_idx] / (kB_CGS * atmosphere.temp[iz]))
                                 
                 integrand_ki = (alphas[active_idx] / hnu_grid[active_idx]) * atom.lte_ratios_photoionization[iz, i_cont] \
                                * stim_spont_term
                 integrand_ik = (alphas[active_idx] / hnu_grid[active_idx]) * J_grid[iz, active_idx]
 
-                R_ik = 4.0 * np.pi * np.sum(weigths_freq_grid[active_idx] * integrand_ik)
-                R_ki = 4.0 * np.pi * np.sum(weigths_freq_grid[active_idx] * integrand_ki)
+                R_ik = 4.0 * np.pi * np.sum(continuum_weights * integrand_ik)
+                R_ki = 4.0 * np.pi * np.sum(continuum_weights * integrand_ki)
                 
                 atom.photoionization_rates[iz, i_cont] = R_ik
                 atom.recombination_rates[iz, i_cont] = R_ki
 
-    max_relative_change = solve_SEE(atoms, atmosphere,
-                                    electron_mode=ELECTRON_MODE)
+    max_relative_change, see_ok = solve_SEE(
+        atoms, atmosphere, electron_mode=ELECTRON_MODE, return_status=True)
     print(f"Iteration {itteration+1} with a max relative change of: {max_relative_change}")
+    if not see_ok:
+        solver_failed = True
+        print("NLTE statistical-equilibrium solve failed; using LTE fallback.")
+        break
     for atom in atoms:
         print(f"  {atom.name} max Lambda_star_bar: {np.max(atom.Lambda_star_bar)}")
     print("-"*50 + "\n")
@@ -414,10 +422,39 @@ for itteration in range(configuration["max_itterations"]):
                 plt.savefig(os.path.join(configuration["save_dir"], f"debug_rates_{atom.name}_trans_{i}_{j}_iter_{itteration+1}.png"))
                 plt.close()
 
-    if max_relative_change < configuration["max_tolerance"]:
-        print("NLTE converged!")
+    # Stop on the ESTIMATED REMAINING ERROR, not on the size of the last step.
+    #
+    # MALI with a diagonal approximate operator converges geometrically, and on the
+    # reference problem the measured ratio is rho = 0.961: the per-iteration change and the
+    # distance to the true solution differ by rho/(1 - rho) = 25. Stopping when the change
+    # first drops below 1e-3 left the departure coefficients 2.6e-2 from the converged
+    # answer -- 26x the tolerance the run reports -- worst on the hydrogen n = 2, 3 and 4
+    # populations in the chromosphere, which is exactly what H-alpha is built from.
+    #
+    # sum_{m>0} rho^m * delta = delta * rho / (1 - rho), so require that, not delta. The
+    # extra min with the tolerance keeps the test from ever stopping EARLIER than the old
+    # one when rho < 0.5, so a noisy ratio can only delay convergence, never fake it.
+    max_tol = configuration["max_tolerance"]
+    if prev_change > 0.0 and max_relative_change > 0.0:
+        rho = max_relative_change / prev_change
+        eff_tol = max_tol * min(1.0, (1.0 - rho) / max(rho, 1e-30)) if rho < 1.0 else -1.0
+    else:
+        eff_tol = max_tol
+    prev_change = max_relative_change
+
+    if max_relative_change < eff_tol:
+        converged = True
+        print(f"NLTE converged!  (convergence ratio rho = {rho:.4f}, estimated remaining "
+              f"error = {max_relative_change * rho / (1.0 - rho):.4E})")
         break
 # #################################################################################
+
+if not converged:
+    atmosphere.ne[:] = atmosphere.ne_bg
+    for atom in atoms:
+        atom.populations[:] = atom.lte_populations
+    reason = "solver failure" if solver_failed else "iteration limit"
+    print(f"NLTE did not converge ({reason}); populations and electron density reset to LTE.")
 
 # =============================================================================
 # DEPARTURE COEFFICIENTS  β_i = n_i(NLTE) / n_i(LTE)

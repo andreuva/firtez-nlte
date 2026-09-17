@@ -374,6 +374,7 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
     
     emis = np.zeros_like(freq_grid)
     abs = np.zeros_like(freq_grid)
+    ne_scale = atmosphere.ne[iz] / max(atmosphere.ne_bg[iz], 1e-20)
 
     h_atom = next((a for a in atoms if a.name == "H"), None)
     # True ground state hydrogen mapping. Falls back to background total H if not existing in config.
@@ -398,18 +399,20 @@ def get_RT_coefficients(iz: int, freq_grid: np.ndarray, weigths_freq_grid: np.nd
             
             n_l = atom.populations[iz, cont.lower_level_index]
             n_u = atom.populations[iz, cont.upper_level_index]
-            n_l_star = atom.lte_populations[iz, cont.lower_level_index]
-            n_u_star = atom.lte_populations[iz, cont.upper_level_index]
+            # This ratio was cached at ne_bg. For adjacent ion stages the
+            # Saha-Boltzmann ratio n_l*/n_u* is linear in electron density, so
+            # apply the same current-density scaling used by the SEE rates.
+            lte_ratio_current = atom.lte_ratios_photoionization[iz, ic] * ne_scale
 
             # Get cross-section already interpolated on the frequency grid
             sigma_nu = atom.photoionization_alphas[ic, :]
 
             hnu_over_kT = h_CGS * freq_grid / (kB_CGS * atmosphere.temp[iz])  # dimensionless
             stim_factor = np.exp(-hnu_over_kT)  # exp(-h*nu / (kB*T))  -- correct parenthesization
-            emis += (2*h_CGS*freq_grid**3/c_CGS**2) * sigma_nu * (n_l_star/n_u_star) *\
+            emis += (2*h_CGS*freq_grid**3/c_CGS**2) * sigma_nu * lte_ratio_current *\
                   n_u * stim_factor
             abs +=  sigma_nu * \
-                (n_l - n_u*(n_l_star/n_u_star)*stim_factor)
+                (n_l - n_u*lte_ratio_current*stim_factor)
 
     # Add continuum contribution
     emis_c, abs_c = add_background_opacity(iz, freq_grid, atoms, atmosphere)
@@ -480,11 +483,50 @@ def add_background_opacity(iz: int,
     h_atom = next((a for a in atoms if a.name == "H"), None)
     n_H_bf_active = sum(1 for l in h_atom.levels if l.ionization == 0) if h_atom else 0
 
+    # The background continuum follows the NLTE hydrogen, as RH does (Background() reads
+    # atmos.H->n every iteration). Freezing it at LTE is wrong where it matters most: H-
+    # bound-free and free-free dominate the visible continuum and scale with the H I GROUND
+    # population, and this solver itself returns b_1 ~ 16 at the top of the reference model,
+    # so chi_continuum -- and with it chi_line/chi_total, the weight of Lambda*-bar -- was
+    # off by a comparable factor exactly in the chromosphere.
+    #
+    # Only two departure factors are needed, because every background H term is a monomial
+    # in one of two densities:
+    #   b_ground  n(H I, n=1)/LTE -- H- bf+ff, H2+, Rayleigh H and H2: ground-state processes
+    #   b_proton  n(H II)/LTE     -- H free-free
+    # The residual H bound-free left to the background (levels above the model atom's top,
+    # plus the (BOLTEX - EXLIM) lump) is collisionally locked to the continuum, so it follows
+    # n_p n_e rather than the ground state: b_ground would be the wrong factor there.
+    #
+    # n_HI_per_U is n(H I)/U. With U(H I) = 2 = g_1 the LTE ground population is
+    # 2*n_HI_per_U, so dividing the NLTE ground population by g_1 puts it back on the same
+    # per-U scale: the whole block is an exact identity when the populations are LTE.
+    n_H1_ground = n_H1
+    n_H1_upper = n_H1
+    if h_atom is not None:
+        neutral = [i for i, l in enumerate(h_atom.levels) if l.ionization == 0]
+        ionized = [i for i, l in enumerate(h_atom.levels) if l.ionization == 1]
+        if neutral:
+            g = min(neutral, key=lambda i: h_atom.levels[i].energy)
+            n1_lte = h_atom.lte_populations[iz, g]
+            if n1_lte > 0.0:
+                n_H1_ground = n_H1 * max(h_atom.populations[iz, g], 0.0) / n1_lte
+        if ionized:
+            np_lte = float(np.sum(h_atom.lte_populations[iz, ionized]))
+            np_nlte = float(np.sum(np.maximum(h_atom.populations[iz, ionized], 0.0)))
+            if np_lte > 0.0:
+                b_proton = np_nlte / np_lte
+                n_H2 = n_H2 * b_proton
+                # Saha: a continuum-coupled level population scales as n_p * n_e.
+                n_H1_upper = n_H1 * b_proton * (ne / max(atmosphere.ne_bg[iz], 1e-30))
+        # H- is in LTE with respect to the H I ground state and n_e (RH's convention).
+        n_Hm = n_Hm * (n_H1_ground / max(n_H1, 1e-300)) * (ne / max(atmosphere.ne_bg[iz], 1e-30))
+
     kappa = np.zeros_like(freq_grid)
-    kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne, n_H1, n_H2,
-                                skip_bf_levels=n_H_bf_active)
-    kappa += _opac_h_minus_wittmann(freq_grid, T, TKEV, ne, EHVKT, n_H1, n_Hm)
-    kappa += _opac_h2plus(freq_grid, FREQLG, FREQ15, TKEV, STIM, n_H1, n_H2)
+    kappa += _opac_h_hydrogenic(freq_grid, FREQLG, T, TLOG, TKEV, HTK, EHVKT, STIM, ne,
+                                n_H1_upper, n_H2, skip_bf_levels=n_H_bf_active)
+    kappa += _opac_h_minus_wittmann(freq_grid, T, TKEV, ne, EHVKT, n_H1_ground, n_Hm)
+    kappa += _opac_h2plus(freq_grid, FREQLG, FREQ15, TKEV, STIM, n_H1_ground, n_H2)
     kappa += _opac_he1(freq_grid, FREQLG, T, TLOG, TKEV, EHVKT, STIM, ne, n_He1, n_He2)
     kappa += _opac_he2(freq_grid, FREQLG, T, TLOG, TKEV, EHVKT, STIM, ne, n_He2, n_He3)
     kappa += _opac_he_minus_ff(freq_grid, T, ne, n_He1)
@@ -505,9 +547,9 @@ def add_background_opacity(iz: int,
                                     _bg(("Ca", 1), sp['n_CaII_per_U'][iz]))
 
     sigma  = 0.6653e-24 * ne
-    sigma += _opac_rayleigh_h(freq_grid, n_H1)
+    sigma += _opac_rayleigh_h(freq_grid, n_H1_ground)
     sigma += _opac_rayleigh_he(freq_grid, n_He1)
-    sigma += _opac_rayleigh_h2(freq_grid, T, TLOG, TKEV, n_H1)
+    sigma += _opac_rayleigh_h2(freq_grid, T, TLOG, TKEV, n_H1_ground)
 
     # total  = kappa + sigma
     # return total * B, total
@@ -680,7 +722,7 @@ def _opac_rayleigh_h2(freq, T, TLOG, TKEV, n_H1):
 def _seaton(FREQ0, XSECT, POWER, A, freq):
     """Seaton photoionization cross-section."""
     ratio = FREQ0 / freq
-    return XSECT * (A + (1.0-A)*ratio) * ratio ** (int(2.0*POWER + 0.01) // 2)
+    return XSECT * (A + (1.0-A)*ratio) * ratio ** (0.5 * int(2.0*POWER + 0.01))
 
 
 def _opac_metals_cool(freq, FREQLG, T, TLOG, TKEV, HTK, STIM,

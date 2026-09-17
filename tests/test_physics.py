@@ -26,10 +26,13 @@ sys.path.insert(0, REPO_ROOT)
 from constants import (kB_CGS, h_CGS, c_CGS, m_e_CGS, m_u_CGS)          # noqa: E402
 from atmosphere import (Atmosphere, compute_lte_populations,             # noqa: E402
                         get_angular_quadrature_1D)
-from atoms import (MultiLevelAtom, create_frequency_grid, solve_SEE,     # noqa: E402
-                   compute_line_frequency_weights, init_line_broadening)
+from atoms import (MultiLevelAtom, create_frequency_grid, solve_SEE, solve_atom,  # noqa: E402
+                   _hydrogen_collider_densities,
+                   compute_line_frequency_weights, continuum_frequency_weights,
+                   init_line_broadening)
 from formal_solver import (plank, voigt, formal_solution, psi_lin,       # noqa: E402
-                           get_RT_coefficients, line_profile, line_damping)
+                           get_RT_coefficients, line_profile, line_damping,
+                           _seaton)
 
 CONFIG = os.path.join(REPO_ROOT, "config_H_Ca_Mg_Na.json")
 
@@ -54,7 +57,7 @@ def model():
         atom.populations = compute_lte_populations(atom, atmosphere)
         atom.lte_populations = atom.populations.copy()
         atom.compute_doppler_widths(atmosphere, v_turb)
-    freq, weights = create_frequency_grid(atoms, v_turb=v_turb)
+    freq, weights = create_frequency_grid(atoms, atmosphere=atmosphere, v_turb=v_turb)
     compute_line_frequency_weights(atoms, freq)
     init_line_broadening(atoms, atmosphere)
 
@@ -238,73 +241,84 @@ def _build_lte_rates(model):
                 atom.Js[iz, il] = np.sum(line.freq_weights * J[iz, :] * phi)
             for ic, cont in enumerate(atom.continua):
                 al = atom.photoionization_alphas[ic, :]
-                act = al > 0
-                if not np.any(act):
+                act, cont_weights = continuum_frequency_weights(al, freq, wq)
+                if act.size == 0:
                     continue
                 stim = ((2.0 * hnu3[act] / c_CGS**2 + J[iz, act])
                         * np.exp(-hnu[act] / (kB_CGS * atm.temp[iz])))
                 atom.photoionization_rates[iz, ic] = 4.0 * np.pi * np.sum(
-                    wq[act] * (al[act] / hnu[act]) * J[iz, act])
+                    cont_weights * (al[act] / hnu[act]) * J[iz, act])
                 atom.recombination_rates[iz, ic] = 4.0 * np.pi * np.sum(
-                    wq[act] * (al[act] / hnu[act])
+                    cont_weights * (al[act] / hnu[act])
                     * atom.lte_ratios_photoionization[iz, ic] * stim)
     return J
+
+
+def test_C0_continuum_endpoint_weights_do_not_borrow_an_unrelated_interval():
+    """A constant integrand on [1, 2] must not acquire half the interval to 100."""
+    frequency = np.array([1.0, 2.0, 100.0])
+    global_weights = np.array([0.5, 49.5, 49.0])
+    alphas = np.array([1.0, 1.0, 0.0])
+
+    idx, weights = continuum_frequency_weights(alphas, frequency, global_weights)
+
+    assert np.array_equal(idx, np.array([0, 1]))
+    assert np.array_equal(weights, np.array([0.5, 0.5]))
+    assert np.sum(weights) == 1.0
+
+
+def test_C0_every_continuum_threshold_is_an_exact_frequency_grid_point(model):
+    atoms, freq = model["atoms"], model["freq"]
+    for atom in atoms:
+        for ic, cont in enumerate(atom.continua):
+            edge_frequency = c_CGS / (cont.get_lambda_edge_nm(atom.levels) * 1e-7)
+            assert np.any(freq == edge_frequency), (
+                f"{atom.name} continuum {ic} threshold missing from global grid")
+
+
+def test_C0_round_trip_keeps_nonzero_threshold_cross_section(model):
+    atoms, freq = model["atoms"], model["freq"]
+    for atom in atoms:
+        for ic, cont in enumerate(atom.continua):
+            edge_frequency = c_CGS / (cont.get_lambda_edge_nm(atom.levels) * 1e-7)
+            idx = np.flatnonzero(freq == edge_frequency)[0]
+            round_trip_wavelength = np.array([(c_CGS / freq[idx]) * 1e7])
+            assert cont.alpha(round_trip_wavelength, atom.levels)[0] > 0.0, (
+                f"{atom.name} continuum {ic} lost its threshold cross-section")
 
 
 def test_C_detailed_balance(model):
     """
     With J_nu = B_nu forced at every depth, solve_SEE must return the Saha-Boltzmann
     populations. This exercises the rates, the profile, the bf integrals and the Saha
-    ratio simultaneously -- a failure isolates whichever of them is inconsistent.
-
-    Tolerances are the model's own internal consistency limits, not arbitrary numbers:
-      - H, 1e-3: the 5 explicit levels do not exactly reproduce the U(H I) fit used by
-        compute_lte_populations (measured slop 2.1e-5).
-      - Ca II, 2e-3: the model has no Ca I stage, so the modelled levels sum to
-        0.99929-1.00006 of N_total.
-    On the unpatched code the H deviation was 248 (F-001) and n_e moved by 93% (F-006).
+    ratio simultaneously. The conservation total is the sum of the explicit LTE levels,
+    so this must hold even where a truncated atom represents only a small fraction of the
+    element. On the old normalization Mg reached a common b=188.672 at 100,000 K.
     """
     atoms, atm = model["atoms"], model["atmosphere"]
     _build_lte_rates(model)
     ne_before = atm.ne.copy()
     reference = {a.name: a.lte_populations.copy() for a in atoms}
-    solve_SEE(atoms, atm, electron_mode="delta")
 
-    # The F-006 invariant is exact only in "delta" mode, where n_e = n_e,bg + the atoms'
-    # departure from their own LTE charge: in detailed balance that departure is zero.
-    # In "nlte" mode n_e is rebuilt from scratch and legitimately lands elsewhere, because
-    # the model atoms carry different abundances from the chemeq EOS table (Mg +17%,
-    # Na -9%, Ca -7% for this configuration) and only two ionization stages. That is a data
-    # inconsistency, surfaced by atoms.validate_abundances, not a solver error.
-    assert np.max(np.abs(atm.ne / ne_before - 1.0)) < 1e-3, \
-        "n_e must not drift when the radiation field is already in detailed balance (F-006)"
+    for electron_mode in ("eos", "delta", "nlte"):
+        atm.ne[:] = ne_before
+        for atom in atoms:
+            atom.populations = reference[atom.name].copy()
 
-    for atom in atoms:
-        ref = reference[atom.name]
-        total = atom.abundance * atm.nh
-        complete = ref.sum(axis=1) / total > 0.999
+        solve_SEE(atoms, atm, electron_mode=electron_mode)
 
-        # (a) Where the model atom accounts for the whole element, detailed balance must
-        #     reproduce Saha-Boltzmann outright.
-        assert complete.sum() > 0.1 * atm.Ndepth, \
-            f"{atom.name}: model accounts for the whole element at only {complete.sum()} depths"
-        dev = np.max(np.abs(atom.populations[complete]
-                            / np.maximum(ref[complete], 1e-300) - 1.0))
-        assert dev < 5e-3, \
-            f"{atom.name} departs from Saha-Boltzmann by {dev:.3e} under J=B (F-001)"
+        assert np.max(np.abs(atm.ne / ne_before - 1.0)) < 1e-3, \
+            (f"n_e drifted in {electron_mode!r} mode while the radiation field was "
+             "already in detailed balance")
 
-        # (b) Everywhere else the SEE conservation row still forces sum n_i = A n_H while
-        #     the LTE reference sums to less, so only the SHAPE can agree. That is the part
-        #     detailed balance actually constrains; the normalisation difference is model
-        #     incompleteness (e.g. Mg I at 1e5 K, where U(Mg II) = 377 and the single
-        #     modelled Mg II level holds 1/377 of the stage). See the runtime warning in
-        #     main.py.
-        shape_o = atom.populations / atom.populations.sum(axis=1, keepdims=True)
-        shape_r = ref / ref.sum(axis=1, keepdims=True)
-        sig = shape_r > 1e-8
-        dev_shape = np.max(np.abs((shape_o / np.maximum(shape_r, 1e-300) - 1.0)[sig]))
-        assert dev_shape < 5e-3, \
-            f"{atom.name}: level ratios depart from Saha-Boltzmann by {dev_shape:.3e} under J=B"
+        for atom in atoms:
+            ref = reference[atom.name]
+            significant = ref / ref.sum(axis=1, keepdims=True) > 1e-8
+            departure = atom.populations / np.maximum(ref, 1e-300)
+            dev = np.max(np.abs(departure[significant] - 1.0))
+            assert dev < 5e-3, \
+                (f"{atom.name}: departure coefficients differ from one by {dev:.3e} "
+                 f"under J=B in {electron_mode!r} mode")
 
 
 def test_C2_lte_populations_conserve_particle_number(model):
@@ -556,13 +570,13 @@ def test_H2_gauss_legendre_weights_sum_to_two():
 # ===========================================================================
 
 def test_L_see_conserves_particle_number_and_positivity(model):
-    """sum_i n_i = A_elem n_H at every depth after solve_SEE, and every n_i > 0."""
+    """SEE conserves the explicit active-level pool and returns positive populations."""
     atoms, atm = model["atoms"], model["atmosphere"]
     _build_lte_rates(model)
     solve_SEE(atoms, atm)
     for atom in atoms:
-        total = atom.abundance * atm.nh
-        assert np.allclose(atom.populations.sum(axis=1), total, rtol=1e-6)
+        active_total = atom.lte_populations.sum(axis=1)
+        assert np.allclose(atom.populations.sum(axis=1), active_total, rtol=1e-6)
         assert np.all(atom.populations > 0.0), f"{atom.name} has a non-positive population"
 
 
@@ -621,6 +635,157 @@ def test_M2_no_negative_opacity_or_emissivity(model):
         assert np.all(absorp >= 0.0), f"negative opacity at depth {iz}"
         assert np.all(emis >= 0.0), f"negative emissivity at depth {iz}"
         assert np.all(np.isfinite(emis)) and np.all(np.isfinite(absorp))
+
+
+def test_M3_bound_free_recombination_terms_scale_with_current_ne(monkeypatch):
+    """Bound-free emissivity and stimulated extinction are linear in current ne."""
+    from types import SimpleNamespace
+    import formal_solver as formal_solver_module
+
+    freq = np.array([3.0e14, 6.0e14])
+    sigma = np.array([2.0e-18, 5.0e-19])
+    n_l, n_u, ratio_bg = 9.0e9, 2.0e8, 4.0
+    continuum = SimpleNamespace(lower_level_index=0, upper_level_index=1)
+    atom = SimpleNamespace(
+        name="X", lines=[], continua=[continuum],
+        populations=np.array([[n_l, n_u]]),
+        lte_ratios_photoionization=np.array([[ratio_bg]]),
+        photoionization_alphas=np.array([sigma]),
+    )
+    atmosphere = SimpleNamespace(
+        Ndepth=1, temp=np.array([8000.0]), nh=np.array([1.0e15]),
+        ne_bg=np.array([1.0e12]), ne=np.array([1.0e12]),
+    )
+
+    zeros = lambda iz, grid, atoms, atmos: (np.zeros_like(grid), np.zeros_like(grid))
+    monkeypatch.setattr(formal_solver_module, "add_background_opacity", zeros)
+
+    eta_1, chi_1 = formal_solver_module.get_RT_coefficients(
+        0, freq, np.ones_like(freq), [atom], atmosphere)
+    stimulated_1 = sigma*n_l - chi_1
+
+    atmosphere.ne[:] = 2.0*atmosphere.ne_bg
+    eta_2, chi_2 = formal_solver_module.get_RT_coefficients(
+        0, freq, np.ones_like(freq), [atom], atmosphere)
+    stimulated_2 = sigma*n_l - chi_2
+
+    assert np.allclose(eta_2, 2.0*eta_1, rtol=1e-14)
+    assert np.allclose(stimulated_2, 2.0*stimulated_1, rtol=1e-12)
+
+
+def test_M4_three_body_recombination_scales_with_ne_squared():
+    """A collision-only ionization pair obeys current-ne detailed balance."""
+    from types import SimpleNamespace
+
+    level_0 = SimpleNamespace(energy=0.0, g=1.0, ionization=0)
+    level_1 = SimpleNamespace(energy=0.0, g=1.0, ionization=1)
+    collision = SimpleNamespace(
+        lower_level_index=0, upper_level_index=1, type="CI",
+        temperatures=np.array([5000.0, 10000.0]),
+        rates=np.array([1.0e-8, 1.0e-8]),
+    )
+    atom = SimpleNamespace(
+        name="X", levels=[level_0, level_1], collisions=[collision],
+        lines=[], continua=[], lte_populations=np.array([[4.0, 1.0]]),
+        populations=np.array([[4.0, 1.0]]),
+        Js=np.zeros((1, 0)), Lambda_star_bar=np.zeros((1, 0)),
+        photoionization_rates=np.zeros((1, 0)),
+        recombination_rates=np.zeros((1, 0)),
+    )
+
+    ne_bg = 1.0e12
+    common = dict(atom=atom, k=0, Tk=8000.0, kT=kB_CGS*8000.0,
+                  N_active_k=5.0, n_h0=1.0e15, n_proton=1.0e12,
+                  old_pops_k=np.array([4.0, 1.0]),
+                  atmosphere_ne_bg_k=ne_bg)
+    pops_bg = solve_atom(ne=ne_bg, **common)
+    pops_2bg = solve_atom(ne=2.0*ne_bg, **common)
+
+    assert np.isclose(pops_bg[0] / pops_bg[1], 4.0, rtol=1e-12)
+    assert np.isclose(pops_2bg[0] / pops_2bg[1], 8.0, rtol=1e-12)
+
+
+def test_M5_hydrogen_collision_coefficients_use_lw_units_and_colliders():
+    """CH/CP are Lightweaver m^3/s tables multiplied by the matching cm^-3 collider."""
+    from types import SimpleNamespace
+
+    levels = [SimpleNamespace(energy=0.0, g=1.0, ionization=0),
+              SimpleNamespace(energy=0.0, g=1.0, ionization=0)]
+    coefficient = 2.5e-15
+    common = dict(
+        name="X", levels=levels, lines=[], continua=[],
+        lte_populations=np.array([[1.0, 1.0]]),
+        populations=np.array([[1.0, 1.0]]),
+        Js=np.zeros((1, 0)), Lambda_star_bar=np.zeros((1, 0)),
+        photoionization_rates=np.zeros((1, 0)),
+        recombination_rates=np.zeros((1, 0)),
+    )
+
+    for collision_type, n_h0, n_proton, matrix_index, collider in (
+            ("CH", 3.0e10, 7.0e8, (0, 1), 3.0e10),
+            ("CP", 3.0e10, 7.0e8, (1, 0), 7.0e8)):
+        collision = SimpleNamespace(
+            lower_level_index=0, upper_level_index=1, type=collision_type,
+            temperatures=np.array([5000.0, 10000.0]),
+            rates=np.array([coefficient, coefficient]))
+        atom = SimpleNamespace(collisions=[collision], **common)
+        solve_atom(
+            atom, k=0, Tk=8000.0, ne=1.0e12, kT=kB_CGS*8000.0,
+            N_active_k=2.0, n_h0=n_h0, n_proton=n_proton,
+            old_pops_k=np.array([1.0, 1.0]), atmosphere_ne_bg_k=1.0e12)
+        assert np.isclose(atom.C_matrix_all[0][matrix_index],
+                          coefficient * collider * 1e6, rtol=1e-14)
+
+
+def test_M6_hydrogen_colliders_follow_explicit_model_or_mode_consistent_lte():
+    """Use explicit H populations; otherwise update LTE H only in full-nlte mode."""
+    from types import SimpleNamespace
+
+    levels = [SimpleNamespace(energy=2.0, ionization=0),
+              SimpleNamespace(energy=0.0, ionization=0),
+              SimpleNamespace(energy=3.0, ionization=1)]
+    hydrogen = SimpleNamespace(
+        Z=1, levels=levels, populations=np.array([[2.0, 7.0, 3.0]]))
+    atmosphere = SimpleNamespace(
+        ne_bg=np.array([100.0]), nh=np.array([10.0]),
+        bg_species={'n_HI_per_U': np.array([4.0]), 'n_HII': np.array([2.0])})
+
+    assert _hydrogen_collider_densities(
+        [hydrogen], atmosphere, 0, "nlte", 200.0) == (7.0, 3.0)
+    assert np.allclose(_hydrogen_collider_densities(
+        [], atmosphere, 0, "eos", 200.0), (8.0, 2.0))
+    assert np.allclose(_hydrogen_collider_densities(
+        [], atmosphere, 0, "delta", 200.0), (8.0, 2.0))
+    assert np.allclose(_hydrogen_collider_densities(
+        [], atmosphere, 0, "nlte", 200.0), (80.0/9.0, 10.0/9.0))
+
+
+def test_M7_seaton_retains_half_integer_power():
+    """The Seaton POWER=1.5 exponent must remain 1.5 rather than truncate to 1."""
+    value = _seaton(1.0, 1.0, 1.5, 1.0, np.array([2.0]))[0]
+    assert np.isclose(value, 0.5**1.5, rtol=1e-15)
+
+
+def test_M8_failed_linear_solve_cannot_report_convergence(model, monkeypatch):
+    """A failed SE solve restores its input state and returns an explicit failure."""
+    import atoms as atoms_module
+
+    atoms, atmosphere = model["atoms"], model["atmosphere"]
+    populations_before = {atom.name: atom.populations.copy() for atom in atoms}
+    ne_before = atmosphere.ne.copy()
+
+    def fail_solve(*args, **kwargs):
+        raise np.linalg.LinAlgError("injected singular rate matrix")
+
+    monkeypatch.setattr(atoms_module, "solve_atom", fail_solve)
+    change, succeeded = solve_SEE(
+        atoms, atmosphere, electron_mode="eos", return_status=True)
+
+    assert not succeeded
+    assert np.isinf(change)
+    assert np.array_equal(atmosphere.ne, ne_before)
+    for atom in atoms:
+        assert np.array_equal(atom.populations, populations_before[atom.name])
 
 
 # ===========================================================================
@@ -858,7 +1023,7 @@ def test_K2_frequency_grid_refinement_converges_second_order():
             atom.populations = compute_lte_populations(atom, atm)
             atom.lte_populations = atom.populations.copy()
             atom.compute_doppler_widths(atm, cfg["atmosphere"]["turbulent_velocity"])
-        freq, _ = create_frequency_grid(atoms, v_turb=cfg["atmosphere"]["turbulent_velocity"])
+        freq, _ = create_frequency_grid(atoms, atmosphere=Atmosphere.from_dict(cfg["atmosphere"]), v_turb=cfg["atmosphere"]["turbulent_velocity"])
         compute_line_frequency_weights(atoms, freq)
         worst = 0.0
         for atom in atoms:

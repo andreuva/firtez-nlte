@@ -202,23 +202,28 @@ class ExplicitContinuum(Continuum):
     def get_wavelength_grid(self, levels: List[Level]) -> np.ndarray:
         grid = np.array([w for w, _ in self.photoionization_cross_section])
         edge_nm = self.get_lambda_edge_nm(levels)
-        if edge_nm - grid[-1] > 0.1:
-            grid = np.append(grid, edge_nm)
-        elif grid[-1] > edge_nm:
-            grid = grid[grid <= edge_nm]
-            if len(grid) == 0 or edge_nm - grid[-1] > 0.01:
-                grid = np.append(grid, edge_nm)
-        return grid
+        # The threshold is the physical boundary of the continuum integral. Keep
+        # all tabulated points below it, discard points beyond it, and append the exact
+        # threshold (also replacing a round-off-equivalent value without duplication).
+        boundary_tol = 64.0 * np.finfo(float).eps * max(1.0, abs(edge_nm))
+        return np.append(grid[grid < edge_nm - boundary_tol], edge_nm)
 
     def alpha(self, wavelength_nm: np.ndarray, levels: List[Level]) -> np.ndarray:
         grid_nm = np.array([w for w, _ in self.photoionization_cross_section])
         grid_alpha = np.array([a for _, a in self.photoionization_cross_section])
         edge_nm = self.get_lambda_edge_nm(levels)
         min_nm = grid_nm[0]
+        max_nm = edge_nm
+        boundary_tol = 64.0 * np.finfo(float).eps * max(1.0, abs(min_nm), abs(max_nm))
 
-        alpha_interp = np.interp(wavelength_nm, grid_nm, grid_alpha, left=0.0, right=0.0)
-        alpha_interp[wavelength_nm < min_nm] = 0.0
-        alpha_interp[wavelength_nm > edge_nm] = 0.0
+        wavelength_eval = np.clip(wavelength_nm, min_nm, max_nm)
+        # A table ending just short of the energy-derived threshold describes
+        # the inside limit of the discontinuity; hold its last sigma to the edge.
+        alpha_interp = np.interp(wavelength_eval, grid_nm, grid_alpha,
+                                 left=0.0, right=grid_alpha[-1])
+        outside = ((wavelength_nm < min_nm - boundary_tol)
+                   | (wavelength_nm > max_nm + boundary_tol))
+        alpha_interp[outside] = 0.0
         alpha_interp[alpha_interp < 0.0] = 0.0
         return alpha_interp
 
@@ -244,20 +249,27 @@ class HydrogenicContinuum(Continuum):
 
     def get_wavelength_grid(self, levels: List[Level]) -> np.ndarray:
         edge_nm = self.get_lambda_edge_nm(levels)
-        return np.linspace(self.minWavelength, edge_nm, self.NlambdaGen)
+        grid = np.linspace(self.minWavelength, edge_nm, self.NlambdaGen)
+        grid[0] = self.minWavelength
+        grid[-1] = edge_nm
+        return grid
 
     def alpha(self, wavelength_nm: np.ndarray, levels: List[Level]) -> np.ndarray:
         edge_nm = self.get_lambda_edge_nm(levels)
+        min_nm = self.minWavelength
+        boundary_tol = 64.0 * np.finfo(float).eps * max(1.0, abs(min_nm), abs(edge_nm))
+        wavelength_eval = np.clip(wavelength_nm, min_nm, edge_nm)
 
         Z = levels[self.upper_level_index].ionization
         nEff = Z * np.sqrt( E_Ryd_erg / (levels[self.upper_level_index].energy - levels[self.lower_level_index].energy))
 
         gbf0 = gaunt_bf(edge_nm, nEff, Z)
-        gbf = gaunt_bf(wavelength_nm, nEff, Z)
+        gbf = gaunt_bf(wavelength_eval, nEff, Z)
 
-        alpha_vals = self.alpha0 * gbf / gbf0 * (wavelength_nm / edge_nm)**3
-        alpha_vals[wavelength_nm < self.minWavelength] = 0.0
-        alpha_vals[wavelength_nm > edge_nm] = 0.0
+        alpha_vals = self.alpha0 * gbf / gbf0 * (wavelength_eval / edge_nm)**3
+        outside = ((wavelength_nm < min_nm - boundary_tol)
+                   | (wavelength_nm > edge_nm + boundary_tol))
+        alpha_vals[outside] = 0.0
         return alpha_vals
 
 def gaunt_bf(wvl, nEff, charge) -> float:
@@ -290,7 +302,7 @@ def gaunt_bf(wvl, nEff, charge) -> float:
 @dataclass
 class Collision:
     """Represents a collisional transition between levels."""
-    type: str  # 'E' for electron, 'H' for neutral hydrogen, etc.
+    type: str  # Omega, CE, CI, CH, or CP
     upper_level_index: int
     lower_level_index: int
     temperatures: List[float]
@@ -298,6 +310,8 @@ class Collision:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Collision":
+        if data.get('type') not in {'Omega', 'CE', 'CI', 'CH', 'CP'}:
+            raise ValueError(f"Unknown collision type {data.get('type')!r}")
         return cls(**data)
 
 @dataclass
@@ -428,16 +442,23 @@ class MultiLevelAtom:
             if line.nu0 > 0:
                 self.doppler_widths[:, il] = (line.nu0 / c_CGS) * v_doppler
 
-def validate_abundances(atoms: List[MultiLevelAtom]) -> None:
+def reconcile_abundances(atoms: List[MultiLevelAtom]) -> None:
     """
-    Warn where a model atom's abundance disagrees with the chemeq ABUND table.
+    Adopt chemeq's ABUND as the single abundance scale for every model atom.
 
-    Two abundance sets are in play: each model atom's own, which sets N_total in the
-    statistical equilibrium, and chemeq's ABUND, which drives the background equation of
-    state and the background opacity species. With electron_density_mode="delta" the
-    disagreement cancels, because only the atom's DEPARTURE from its own LTE charge is
-    applied on top of n_e,bg. With "nlte" it does not: the model atom replaces the EOS's
-    contribution for that element outright, so an abundance mismatch shifts n_e directly.
+    Two sets used to be in play: each model atom's own, which scales its explicit level
+    pool, and chemeq's ABUND, which drives the complete LTE EOS reservoir, the background
+    opacity and the passive electron donors. They disagreed by up to 17.5% (Mg_I) in the
+    shipped models.
+
+    That is not a free choice, because the two are subtracted from one another. solve_SEE
+    forms (NLTE charge of the active levels) - (their LTE charge) and adds it to an EOS
+    baseline built from ABUND; the background opacity suppresses the ABUND-based bound-free
+    of any species an explicit atom supplies and replaces it with that atom's. Both
+    cancellations are exact only if the two scales are the same one.
+
+    Departure coefficients b = n / n_LTE are ratios and so are insensitive to this to first
+    order; what it fixes is the charge budget and the opacity.
     """
     from chemeq import ABUND
 
@@ -447,11 +468,11 @@ def validate_abundances(atoms: List[MultiLevelAtom]) -> None:
             continue
         ratio = atom.abundance / eos
         if abs(ratio - 1.0) > 0.02:
-            print(f"WARNING: {atom.name}: abundance {atom.abundance:.4e} differs from the "
-                  f"chemeq EOS table value {eos:.4e} by {100*(ratio-1):+.1f}%. The two are "
-                  f"used for different things (SE particle conservation vs the background "
-                  f"EOS and opacities); with electron_density_mode='nlte' the difference "
-                  f"biases n_e.")
+            print(f" NOTE: {atom.name}: model abundance {atom.abundance:.4E} replaced by "
+                  f"the chemeq EOS value {eos:.4E} (differed by "
+                  f"{100.0 * (ratio - 1.0):.1f}%), so the charge budget and the background "
+                  f"opacity stay consistent.")
+        atom.abundance = eos
 
 
 def validate_ionization_stages(atoms: List[MultiLevelAtom]) -> None:
@@ -504,10 +525,49 @@ def validate_ionization_stages(atoms: List[MultiLevelAtom]) -> None:
                   f"the broadening effective charge will all be wrong. Relabel the levels.")
 
 
-VMICRO_CHAR = 3.0e5   # cm/s. RH's VMICRO_CHAR: the fixed characteristic velocity used to
+VMICRO_FLOOR = 3.0e5  # cm/s. Lower bound only; see line_grid_velocity. Formerly RH's fixed
                       # lay out per-line wavelength grids (getlambda.c). It is NOT the
                       # atmosphere's microturbulence -- the real profile width still comes
                       # from atom.doppler_widths. See audit F-018.
+
+
+def line_grid_velocity(atom: MultiLevelAtom, atmosphere: "Atmosphere", v_turb) -> float:
+    """
+    Characteristic velocity [cm/s] mapping a line's dimensionless q grid onto wavelength.
+
+    RH and Lightweaver use a fixed 3 km/s. That constant stands in for the Doppler width,
+    and when the real width exceeds it the q_wing point no longer reaches the wing: the
+    window spans only q_wing * (v_char / v_Doppler) TRUE Doppler widths. Measured on the
+    reference model at 3 km/s, hydrogen's Paschen and Brackett windows reached just 7.0
+    Doppler widths and enclosed 27-61% of the profile area, which the numerical profile
+    normalisation then folded back into the core as a 1.6-3.7x opacity error.
+
+    So use the atmosphere's own Doppler velocity: FIRTEZ's microturbulence added in
+    quadrature to this atom's thermal velocity. Microturbulence alone would not do -- the
+    thermal term usually dominates, and taking it alone would shrink the windows further
+    wherever v_turb < 3 km/s.
+
+    The maximum is taken only over the part of the column where the atom actually absorbs.
+    A model capped by a transition region would otherwise set v_char from a 100 kK point at
+    which the species is fully ionised, stretching the grid by an order of magnitude and
+    starving the line core (1 point per Doppler width for H-alpha and Ca II K, against 15
+    and 3 at 3 km/s). w spans many decades, so the 1e-3 cut is not sharp in practice.
+    """
+    from atmosphere import compute_lte_population_at_ne
+
+    T = np.asarray(atmosphere.temp, dtype=float)
+    vt = np.asarray(v_turb, dtype=float) * np.ones_like(T)
+    v = np.sqrt(2.0 * kB_CGS * T / (m_u_CGS * atom.mass) + vt ** 2)
+
+    w = np.array([np.sum(compute_lte_population_at_ne(
+        atom, T[iz], atmosphere.ne_bg[iz], atmosphere.nh[iz])) for iz in range(T.size)])
+
+    wmax = np.max(w)
+    if wmax > 0.0:
+        v_char = np.max(v[w >= 1e-3 * wmax])
+    else:
+        v_char = np.max(v)
+    return float(max(v_char, VMICRO_FLOOR))
 
 
 def create_frequency_grid(atoms: List[MultiLevelAtom], 
@@ -515,8 +575,8 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
                         #   v_turb: float = 0.0,
                         #   max_resol_nm: float = 3e-4,
                         #   min_resol_nm: float = 1e1,) -> Tuple[np.ndarray, np.ndarray]:
-                          v_turb: float = 0.0,
-                          v_micro_char: float = VMICRO_CHAR) -> Tuple[np.ndarray, np.ndarray]:
+                          atmosphere: "Atmosphere" = None,
+                          v_turb=0.0) -> Tuple[np.ndarray, np.ndarray]:
     """
     Creates a global frequency grid with trapezoidal integration weights.
 
@@ -542,6 +602,8 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
 
     # Generate the combined frequency set from continua and lines
     for atom in atoms:
+        # per ATOM, because the thermal width depends on the atomic mass
+        v_char = line_grid_velocity(atom, atmosphere, v_turb)
         # Dynamically fetch grids representing Continua transitions properly (Explicit and Hydrogenic)
         for cont in atom.continua:
             wl_grid_nm = cont.get_wavelength_grid(atom.levels) 
@@ -580,14 +642,9 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
             # for nu in (line.nu0 + x_grid * doppler_width_nu_rep):
             #     frequency_set.add(nu)
 
-            # RH and Lightweaver lay the per-line grid out on a FIXED characteristic
-            # velocity (RH's VMICRO_CHAR = 3 km/s), not on the atmosphere's microturbulence.
-            # An earlier revision of this audit used max(v_turb) here to accommodate a
-            # depth-dependent v_turb; for FAL-C that is 6.75 km/s, which stretches every
-            # window by 2.25x and halves the number of points sampling the line core
-            # (13 vs 25 within +-1 real Doppler width for Ly-alpha). Restored to the RH
-            # convention; override via the v_micro_char argument if needed. See audit F-018.
-            doppler_width_lambda = line.lambda0 * (v_micro_char / c_CGS)
+            # See line_grid_velocity: FIRTEZ's microturbulence plus this atom's thermal
+            # width, over the line-forming part of the column -- not a hard-wired 3 km/s.
+            doppler_width_lambda = line.lambda0 * (v_char / c_CGS)
             
             # The grid is built symmetric in *wavelength* space, not frequency!
             local_lambdas = line.lambda0 + x_grid * doppler_width_lambda
@@ -645,6 +702,33 @@ def create_frequency_grid(atoms: List[MultiLevelAtom],
     weights[1:-1] = 0.5 * (nus[2:] - nus[:-2])
 
     return nus, weights
+
+
+def continuum_frequency_weights(alphas: np.ndarray,
+                                frequency_grid: np.ndarray,
+                                global_weights: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return a continuum's active indices and support-local trapezoid weights.
+
+    The global grid is a union of many transitions. At a continuum boundary its
+    global endpoint weight can include half an interval outside that continuum's
+    support. Only the two endpoint weights need replacing; every interior global
+    trapezoid weight already uses two neighbours inside the support.
+
+    A single active point has no integration interval and returns empty arrays.
+    """
+    active = np.flatnonzero(alphas > 0.0)
+    if active.size < 2:
+        return np.empty(0, dtype=int), np.empty(0, dtype=global_weights.dtype)
+
+    # Cross sections have contiguous support on the global grid. Retain the complete
+    # slice so a zero-valued tabulated point inside it does not alter the geometry.
+    indices = np.arange(active[0], active[-1] + 1)
+    weights = global_weights[indices].copy()
+    weights[0] = 0.5 * (frequency_grid[indices[0] + 1]
+                        - frequency_grid[indices[0]])
+    weights[-1] = 0.5 * (frequency_grid[indices[-1]]
+                         - frequency_grid[indices[-1] - 1])
+    return indices, weights
 
 
 def compute_line_frequency_weights(atoms: List[MultiLevelAtom],
@@ -811,9 +895,40 @@ def init_line_broadening(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere") 
 ELECTRON_MODES = ("eos", "delta", "nlte")
 
 
+def _hydrogen_collider_densities(atoms, atmosphere, k, electron_mode, ne):
+    """Return the H I ground-level and proton densities used by CH and CP."""
+    hydrogen = next((atom for atom in atoms if atom.Z == 1), None)
+    if hydrogen is not None:
+        neutral = [i for i, level in enumerate(hydrogen.levels)
+                   if level.ionization == 0]
+        protons = [i for i, level in enumerate(hydrogen.levels)
+                   if level.ionization == 1]
+        if neutral and protons:
+            ground = min(neutral, key=lambda i: hydrogen.levels[i].energy)
+            return (max(float(hydrogen.populations[k, ground]), 0.0),
+                    max(float(np.sum(hydrogen.populations[k, protons])), 0.0))
+
+    # compute_background_species stores n(H I)/U with U(H I)=2.  Since the H I
+    # ground level also has g=2, twice this value is its LTE ground population.
+    # An unmodelled H donor is frozen in eos/delta and follows the current ne in
+    # full-nlte mode, consistently with passive_electron_density.
+    n_hi_bg = 2.0 * atmosphere.bg_species['n_HI_per_U'][k]
+    n_hii_bg = atmosphere.bg_species['n_HII'][k]
+    ne_bg = max(float(atmosphere.ne_bg[k]), 1e-30)
+    ne_h = max(float(ne), 1e-30) if electron_mode == "nlte" else ne_bg
+
+    # At fixed T, n(H II)/n(H I) is proportional to 1/ne.  This form avoids
+    # dividing by either background population when one stage is very scarce.
+    denominator = ne_h * n_hi_bg + ne_bg * n_hii_bg
+    if denominator > 0.0:
+        return (atmosphere.nh[k] * ne_h * n_hi_bg / denominator,
+                atmosphere.nh[k] * ne_bg * n_hii_bg / denominator)
+    return float(atmosphere.nh[k]), 0.0
+
+
 def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
               max_itterations=100, tolerance=1e-5,
-              electron_mode: str = "nlte") -> float:
+              electron_mode: str = "nlte", return_status: bool = False):
     """
     Solves the coupled Statistical Equilibrium and Charge/Particle
     Conservation equations using a decoupled iterative Lambda method.
@@ -837,23 +952,30 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
                background: the electrons donated by everything that is not an active atom
                stay frozen at their LTE value at n_e,bg and never respond to n_e moving.
 
-      "nlte"   Full charge conservation. The active atoms donate from their NLTE populations
-               and every other element is re-evaluated from Saha AT THE CURRENT n_e, so the
-               passive donors track the solution instead of being frozen. n_H is held fixed,
-               as RH does with conserveCharge=True; the pressure-balance feedback of n_e on
-               n_H is not followed.
+      "nlte"   The full LTE EOS charge is re-evaluated at the current n_e, including the
+               omitted-level reservoir, then corrected by the explicit model levels'
+               NLTE-minus-LTE charge. n_H is held fixed.
 
     Returns:
         The maximum relative change in the state vector (populations + ne)
-        from the *start* of the call.
+        from the *start* of the call. If ``return_status`` is true, also returns
+        whether every linear solve and local electron iteration succeeded.
     """
     if electron_mode not in ELECTRON_MODES:
         raise ValueError(f"electron_mode must be one of {ELECTRON_MODES}, got {electron_mode!r}")
-    active_Z = {atom.Z for atom in atoms}
-
+    # Imported here to avoid the module-level atoms <-> atmosphere import cycle.
+    from atmosphere import compute_lte_population_at_ne
     # Store old state for final convergence check
     old_ne = atmosphere.ne.copy()
     old_pops = {atom.name: atom.populations.copy() for atom in atoms}
+
+    def failed_result(message: str):
+        """Restore this call's input state and return an unmistakable failure."""
+        print(message)
+        atmosphere.ne[:] = old_ne
+        for failed_atom in atoms:
+            failed_atom.populations[:] = old_pops[failed_atom.name]
+        return (np.inf, False) if return_status else np.inf
 
     # --- Main Loop over All Depth Points ---
     for k in range(atmosphere.Ndepth):
@@ -871,44 +993,77 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
             print(f"Warning: Initial ne at depth k={k} is non-positive. Setting to a small positive value for iteration.")
             ne_current_iter = 1e-20
 
-        # Compute initial charge from modelled atoms (before solving SE)
-        lte_total_charge = 0.0
-
         # Save the populations from the outer ALI iteration for S_old computation.
         # These must NOT be overwritten during the local ne-iterations.
         old_pops_for_S = {}
         for atom in atoms:
-            charges_arr = np.array([l.ionization for l in atom.levels])
-            lte_total_charge += np.sum(atom.lte_populations[k, :] * charges_arr)
             old_pops_for_S[atom.name] = atom.populations[k, :].copy()
 
         # --- Local Iteration for (Populations <-> ne) ---
         # In "eos" mode the electron density is held at the background EOS value and never
         # updated, so one pass suffices -- nothing couples back into n_e.
         n_local = 1 if electron_mode == "eos" else max_itterations
+        local_converged = electron_mode == "eos"
         for local_iter in range(n_local):
             
             ne_for_rates = ne_current_iter.copy()
             new_total_charge = 0.0
+
+            # In full mode passive model atoms represent LTE at the same electron density
+            # used by the active rates. Their charge is already in the complete EOS baseline.
+            if electron_mode == "nlte":
+                for atom in atoms:
+                    if not atom.is_active:
+                        atom.populations[k, :] = compute_lte_population_at_ne(
+                            atom, Tk, ne_for_rates, nh)
+
+            # LTE reference charge of the active atoms, at the electron density THIS pass
+            # uses.  It is subtracted from an EOS baseline that is itself evaluated at
+            # ne_current_iter, so both sides have to sit at the same n_e or the difference
+            # keeps a spurious term linear in (ne_current - ne_bg) -- precisely the regime
+            # "nlte" mode exists to describe.  It used to be computed once, outside this
+            # loop, from lte_populations, which are tabulated at ne_bg and cannot respond;
+            # the n_e dependence is real and not small, since n(H II) alone scales roughly
+            # as 1/n_e at fixed T.
+            #
+            # In "eos" and "delta" modes the baseline is atmosphere.ne_bg, so the reference
+            # has to stay at ne_bg too.
+            lte_total_charge = 0.0
+            for atom in atoms:
+                if not atom.is_active:
+                    continue
+                charges_arr = np.array([l.ionization for l in atom.levels])
+                if electron_mode == "nlte":
+                    lte_pops_now = compute_lte_population_at_ne(atom, Tk, ne_for_rates, nh)
+                    lte_total_charge += np.sum(lte_pops_now * charges_arr)
+                else:
+                    lte_total_charge += np.sum(atom.lte_populations[k, :] * charges_arr)
+
+            # Snapshot the hydrogen colliders before solving any atom so the rates do not
+            # depend on atom ordering. The next local iteration takes a fresh snapshot.
+            n_h0, n_proton = _hydrogen_collider_densities(
+                atoms, atmosphere, k, electron_mode, ne_for_rates)
             
             # --- Solve all atom populations with fixed ne ---
             for atom in atoms:
                 if not atom.is_active:
-                    # Held at LTE: contributes opacity and charge, but no SE solve. Its
-                    # charge contribution cancels in delta_charge_total because it equals
-                    # the LTE value by construction.
-                    charges = np.array([l.ionization for l in atom.levels])
-                    new_total_charge += np.sum(atom.populations[k, :] * charges)
+                    # Passive charge is supplied once by the LTE EOS baseline.
                     continue
-                N_total_k = atom.abundance * nh
-                if N_total_k <= 0:
-                    print(f"Warning: Atom {atom.name} has non-positive abundance at depth k={k}. Skipping SE solve for this atom.")
-                    continue
+                N_active_k = np.sum(atom.lte_populations[k, :])
+                if N_active_k <= 0 or not np.isfinite(N_active_k):
+                    return failed_result(
+                        f"Error: Atom {atom.name} has an invalid active LTE population "
+                        f"at depth k={k}; statistical-equilibrium solve failed.")
                     
                 # Solve for this atom at this depth, using old_pops for S_old
-                populations_new = solve_atom(atom, k, Tk, ne_for_rates, kT, N_total_k, nh,
-                                             old_pops_k=old_pops_for_S[atom.name],
-                                             atmosphere_ne_bg_k=atmosphere.ne_bg[k])
+                try:
+                    populations_new = solve_atom(
+                        atom, k, Tk, ne_for_rates, kT, N_active_k, n_h0, n_proton,
+                        old_pops_k=old_pops_for_S[atom.name],
+                        atmosphere_ne_bg_k=atmosphere.ne_bg[k])
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError) as exc:
+                    return failed_result(
+                        f"Error solving atom {atom.name} at depth k={k}: {exc}")
                 
                 # Update atom's population *at this depth*
                 atom.populations[k, :] = populations_new
@@ -919,20 +1074,24 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
 
             if electron_mode == "eos":
                 ne_current_iter = atmosphere.ne_bg[k]
+                local_converged = True
                 break
 
             # --- Calculate new ne and check convergence ---
-            # Update ne self-consistently from the NLTE populations.
-            # The delta-charge correction finds the total change in ionization
-            # relative to the LTE background state and adds it on top.
+            # The explicit levels carry only their active LTE population. Their charge
+            # change is overlaid on an EOS baseline that retains all omitted population.
+            delta_charge_total = new_total_charge - lte_total_charge
             if electron_mode == "nlte":
-                # Full charge conservation: active atoms donate from their NLTE populations,
-                # every other element from Saha re-evaluated at the CURRENT n_e.
-                ne_target = new_total_charge + passive_electron_density(
-                    Tk, nh, ne_current_iter, exclude_Z=active_Z)
+                # Re-evaluate every LTE EOS donor at the current ne, including elements
+                # with active atoms, then add only their explicit active charge departure.
+                ne_target = (passive_electron_density(Tk, nh, ne_current_iter)
+                             + delta_charge_total)
             else:
-                delta_charge_total = new_total_charge - lte_total_charge
                 ne_target = atmosphere.ne_bg[k] + delta_charge_total
+
+            if not np.isfinite(ne_target):
+                return failed_result(
+                    f"Error: non-finite electron-density target at depth k={k}.")
 
             # FIX: Prevent catastrophic cancellation from wiping out trace metal electrons.
             # Metals (Fe, Si, Mg) ensure ne never drops below ~1e-6 of the total Hydrogen density.
@@ -949,16 +1108,22 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
             ne_new = 0.5 * (ne_current_iter + ne_target)
             
             rel_change_ne = np.abs(ne_new - ne_current_iter) / max(ne_current_iter, 1e-20)
+            if not np.isfinite(ne_new) or not np.isfinite(rel_change_ne):
+                return failed_result(
+                    f"Error: non-finite electron-density iteration at depth k={k}.")
             ne_current_iter = ne_new
             
             if rel_change_ne < tolerance:
+                local_converged = True
                 break # Local convergence reached
 
         # Update the atmosphere's 'ne' with the converged value
         atmosphere.ne[k] = ne_current_iter
         
-        if electron_mode != "eos" and local_iter == max_itterations - 1:
-            print(f"Warning: SE local iteration did not converge at depth k={k}")
+        if not local_converged:
+            return failed_result(
+                f"Warning: SE local electron iteration did not converge at depth k={k}; "
+                "statistical-equilibrium solve failed.")
 
     # --- Calculate max *global* relative change ---
     # (change from the start of the *entire* solve_SEE call)
@@ -967,6 +1132,8 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
     avg_ne[avg_ne < 1e-20] = 1e-20
     rel_change_ne_vec = np.abs(old_ne - atmosphere.ne) / avg_ne
     max_rel_change = np.max(rel_change_ne_vec)
+    if not np.isfinite(max_rel_change):
+        return failed_result("Error: non-finite electron-density convergence metric.")
     
     # Get max change in all populations
     for atom in atoms:
@@ -977,15 +1144,19 @@ def solve_SEE(atoms: List[MultiLevelAtom], atmosphere: "Atmosphere",
         
         rel_change_p_vec = np.abs(old_p - new_p) / avg_p
         rel_change_p = np.max(rel_change_p_vec)
+        if not np.isfinite(rel_change_p):
+            return failed_result(
+                f"Error: non-finite population convergence metric for {atom.name}.")
         
         if rel_change_p > max_rel_change:
             max_rel_change = rel_change_p
             
-    return max_rel_change
+    return (max_rel_change, True) if return_status else max_rel_change
 
 # --- Internal helper function to solve SE for one atom at one depth ---
 def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
-                N_total_k: float, nh: float, old_pops_k: np.ndarray = None,
+                N_active_k: float, n_h0: float, n_proton: float,
+                old_pops_k: np.ndarray = None,
                 atmosphere_ne_bg_k: float = 0.0) -> np.ndarray:
     """
     Solves A*n = b for a single atom at depth k using fixed ne.
@@ -999,6 +1170,11 @@ def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
     B_vector = np.zeros(Nlevel) 
     R_matrix = np.zeros((Nlevel, Nlevel))
     C_matrix = np.zeros((Nlevel, Nlevel))
+
+    # Cross-stage LTE ratios were tabulated at the background electron density.
+    # Their Saha factor is linear in ne, so use the ratio appropriate to the
+    # current local electron iteration. This is exactly one in "eos" mode.
+    ne_scale = ne / max(atmosphere_ne_bg_k, 1e-20)
 
     # --- Collisional Rates ---
     for coll in atom.collisions:
@@ -1035,24 +1211,33 @@ def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
             # Collisional ionization by electrons
             Cij = C_rate_coeff * ne * np.exp(-dE / kT) * np.sqrt(Tk) * 1e6
             lte_ratio = atom.lte_populations[k, i] / np.maximum(atom.lte_populations[k, j], 1e-100)
-            Cji = Cij * lte_ratio
+            Cji = Cij * lte_ratio * ne_scale
             
         elif coll.type == "CH":
-            # Collisions with neutral hydrogen
-            Cij = C_rate_coeff * nh
+            # Lightweaver CH coefficients are m^3/s and use the H I ground level.
+            Cij = C_rate_coeff * n_h0 * 1e6
             if ionizations[i] == ionizations[j]:
                 Cji = Cij * (gs[i] / gs[j]) * np.exp(dE / kT)
             else:
                 lte_ratio = atom.lte_populations[k, i] / np.maximum(atom.lte_populations[k, j], 1e-100)
-                Cji = Cij * lte_ratio
+                Cji = Cij * lte_ratio * ne_scale
                 
         elif coll.type == "CP":
-            # Collisions with protons
-            Cji = C_rate_coeff * nh
-            Cij = Cji * (gs[j] / gs[i]) * exp_factor
+            # Collisional de-excitation by protons.  RH's CP (collision.c:722) and
+            # Lightweaver's CP: the table is the DOWNWARD rate, the partner follows from
+            # detailed balance.  Coefficients are m^3/s and use the proton population.
+            Cji = C_rate_coeff * n_proton * 1e6
+            if ionizations[i] == ionizations[j]:
+                Cij = Cji * (gs[j] / gs[i]) * exp_factor
+            else:
+                # Across an ionization edge n_j*/n_i* is not (g_j/g_i) exp(-dE/kT): it
+                # carries a Saha factor linear in n_e.  Both references use n_j*/n_i*
+                # unconditionally.  Mirrors the branch "CH" already has.
+                lte_ratio = atom.lte_populations[k, i] / np.maximum(atom.lte_populations[k, j], 1e-100)
+                Cij = Cji / np.maximum(lte_ratio * ne_scale, 1e-100)
         else:
-            print(f"WARNING: Unknown collision type '{coll.type}' in atom {atom.name}. Skipping this collision.")
-            continue
+            raise ValueError(
+                f"Unknown collision type {coll.type!r} in atom {atom.name}.")
             
         C_matrix[i, j] += Cij
         C_matrix[j, i] += Cji
@@ -1094,7 +1279,6 @@ def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
     # but n_e is updated every iteration (and inside this routine's own local iteration),
     # while the collisional rates in the same matrix use the current n_e. Rescale so the
     # whole matrix is evaluated at one consistent electron density (audit F-006).
-    ne_scale = ne / atmosphere_ne_bg_k if atmosphere_ne_bg_k > 0.0 else 1.0
     for i_cont, cont in enumerate(atom.continua):
         i, j = cont.lower_level_index, cont.upper_level_index
         R_matrix[i, j] += atom.photoionization_rates[k, i_cont]
@@ -1110,31 +1294,35 @@ def solve_atom(atom: MultiLevelAtom, k: int, Tk: float, ne: float, kT: float,
     # Dynamically find the index of the most populated level.
     max_pop_idx = np.argmax(old_pops_k)
 
-    # Overwrite the equation for the most populated level with the conservation equation.
+    # SNAPI-style reduced-atom normalization: conserve the population carried by the
+    # explicit LTE levels. Population included in the full partition functions but absent
+    # from the model remains in the LTE EOS reservoir.
     # Scale the row by the typical departure rate of the most populated level to balance the matrix conditioning.
     scale = total_departure_rate_from_i[max_pop_idx]
     if scale <= 1e-100:
         scale = 1.0
     A_matrix[max_pop_idx, :] = scale
-    B_vector[max_pop_idx] = N_total_k * scale
+    B_vector[max_pop_idx] = N_active_k * scale
 
     # A_element_names = [f"{atom.name}_level_{i}" for i in range(Nlevel)]
     # print(f"\n DEBUG: Rate matrix A for atom {atom.name} at depth k={k}")
     # print_eq_system(A_matrix, B_vector, A_element_names)
 
     # --- Solve the linear system A*n = b ---
-    try:
-        populations_new = np.linalg.solve(A_matrix, B_vector)
-        # Check for NaNs or Infs
-        if not np.all(np.isfinite(populations_new)):
-            raise ValueError("Linear solver returned non-finite values (NaN/Inf).")
-        populations_new[populations_new < 0] = 1e-100 # Clamp negatives
-    except (np.linalg.LinAlgError, ValueError) as e:
-        print(f"Error solving atom SE at depth k={k}: {e}")
-        if old_pops_k is not None:
-            populations_new = old_pops_k.copy()
-        else:
-            populations_new = atom.populations[k, :].copy()
+    if not np.all(np.isfinite(A_matrix)) or not np.all(np.isfinite(B_vector)):
+        raise ValueError("Rate matrix contains non-finite values (NaN/Inf).")
+
+    populations_new = np.linalg.solve(A_matrix, B_vector)
+    if not np.all(np.isfinite(populations_new)):
+        raise ValueError("Linear solver returned non-finite populations (NaN/Inf).")
+    if np.any(populations_new < 0.0):
+        raise ValueError("Linear solver returned a negative population.")
+    residual = np.max(np.abs(A_matrix @ populations_new - B_vector))
+    residual_scale = max(np.max(np.abs(B_vector)),
+                         np.max(np.abs(A_matrix)) * np.max(np.abs(populations_new)),
+                         1e-100)
+    if not np.isfinite(residual) or residual > 1e-8 * residual_scale:
+        raise ValueError("Linear solver returned an excessive equation residual.")
     
     # Save the rate matrices for debugging
     if not hasattr(atom, 'R_matrix_all') or atom.R_matrix_all.shape != (atom.populations.shape[0], Nlevel, Nlevel):
